@@ -14,7 +14,9 @@ import (
 
 type (
 	NSQConfig struct {
-
+		NSQDHost        string
+		NSQDTCPPort     string
+		LookupdHttpPort string
 	}
 	// Nsq defines the interface for NSQ operations including publishing and consuming messages.
 	Nsq interface {
@@ -49,19 +51,17 @@ type (
 func NewNsqClient(cfg *NSQConfig) (*nsqClient, error) {
 	nsqConfig := nsq.NewConfig()
 
-	// addr := fmt.Sprintf("%s:%s", cfg.Config.Nsq.NSQDHost, cfg.Config.Nsq.NSQDTCPPort)
-	addr := ""
+	addr := fmt.Sprintf("%s:%s", cfg.NSQDHost, cfg.NSQDTCPPort)
 	producer, err := nsq.NewProducer(addr, nsqConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create NSQ producer: %w", err)
 	}
 
-	lookupd := ""
+	lookupd := fmt.Sprintf("%s:%s", cfg.NSQDHost, cfg.LookupdHttpPort)
 
 	return &nsqClient{
-		pub:    producer,
-		config: cfg,
-		// lookupd: fmt.Sprintf("%s:%s", cfg.Config.Nsq.NSQDHost, cfg.Config.Nsq.LookupdHttpPort),
+		pub:     producer,
+		config:  cfg,
 		lookupd: lookupd,
 	}, nil
 }
@@ -98,8 +98,7 @@ func (n *nsqClient) RegisterConsumer(topic string, handlerFunc func(context.Cont
 		return nil
 	}))
 
-	// lookupAddr := fmt.Sprintf("%s:%s", n.config.Config.Nsq.NSQDHost, n.config.Config.Nsq.LookupdHttpPort)
-	lookupAddr := ""
+	lookupAddr := fmt.Sprintf("%s:%s", n.config.NSQDHost, n.config.LookupdHttpPort)
 	log.Println("Connecting to nsqlookupd at", lookupAddr)
 
 	if err := consumer.ConnectToNSQLookupd(lookupAddr); err != nil {
