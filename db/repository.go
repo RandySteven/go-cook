@@ -1,4 +1,4 @@
-package mysql_client
+package db_client
 
 import (
 	"context"
@@ -17,7 +17,6 @@ const (
 	updateQuery = `UPDATE`
 	deleteQuery = `DELETE`
 )
-
 
 type (
 	Many2ManyRepository[T any] interface {
@@ -59,7 +58,6 @@ type (
 		DropIndex(ctx context.Context) (err error)
 	}
 )
-
 
 // QueryValidation validates that a query string contains the expected SQL command.
 // Returns an error if the query does not contain the specified command.

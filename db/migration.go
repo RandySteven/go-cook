@@ -1,17 +1,17 @@
-package mysql_client
+package db_client
 
 import (
 	"context"
 )
 
 type MigrationWorker struct {
-	MySQLClient *mysqlClient
+	DBClient DBClient
 	Tables      []string
 }
 
-func InitMigrationWorker(mysqlClient *mysqlClient) *MigrationWorker {
+func InitMigrationWorker(dbClient DBClient) *MigrationWorker {
 	return &MigrationWorker{
-		MySQLClient: mysqlClient,
+		DBClient: dbClient,
 	}
 }
 
@@ -25,7 +25,7 @@ func (m *MigrationWorker) RegisterMigration(queries ...string) {
 // Currently returns nil as migrations are not implemented.
 func (m *MigrationWorker) Migration(ctx context.Context) error {
 	for _, migration := range m.Tables {
-		_, err := m.MySQLClient.db.ExecContext(ctx, migration)
+		_, err := m.DBClient.Client().ExecContext(ctx, migration)
 		if err != nil {
 			return err
 		}

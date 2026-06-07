@@ -1,7 +1,7 @@
-// Package mysql_client provides a PostgreSQL database client wrapper with connection
+// Package db_client provides a PostgreSQL database client wrapper with connection
 // pooling, health checks, and lifecycle management. Despite the package name,
 // it currently implements a PostgreSQL connection using the lib/pq driver.
-package mysql_client
+package db_client
 
 import (
 	"database/sql"
@@ -14,7 +14,8 @@ import (
 )
 
 type (
-	PostgresConfig struct {
+	DBConfig struct {
+		Db     string
 		DbUser string
 		DbPass string
 		DbName string
@@ -22,7 +23,7 @@ type (
 	}
 	// MySQL defines the interface for database operations including connection
 	// management, health checks, and migrations.
-	MySQL interface {
+	DBClient interface {
 		// Close closes the database connection and releases resources.
 		Close()
 		// Ping verifies the database connection is still alive.
@@ -31,23 +32,23 @@ type (
 		Client() *sql.DB
 	}
 	// mysqlClient is the internal implementation of the MySQL interface.
-	mysqlClient struct {
+	dbClient struct {
 		db *sql.DB
 	}
 )
 
 // Client returns the underlying *sql.DB instance for direct database access.
-func (m *mysqlClient) Client() *sql.DB {
+func (m *dbClient) Client() *sql.DB {
 	return m.db
 }
 
 // Close closes the database connection and releases all associated resources.
-func (m *mysqlClient) Close() {
+func (m *dbClient) Close() {
 	m.db.Close()
 }
 
 // Ping verifies the database connection is still alive by sending a ping request.
-func (m *mysqlClient) Ping() error {
+func (m *dbClient) Ping() error {
 	return m.db.Ping()
 }
 
@@ -59,15 +60,25 @@ func (m *mysqlClient) Ping() error {
 //   - ConnMaxIdleTime: 8 minutes
 //
 // Returns an error if the connection cannot be established or ping fails.
-func NewMYSQLClient(config *PostgresConfig) (*mysqlClient, error) {
-	conn := fmt.Sprintf("postgresql://%s:%s@%s/%s?sslmode=require",
+func NewMYSQLClient(config *DBConfig) (*dbClient, error) {
+	conn := fmt.Sprintf("%s://%s:%s@%s/%s?sslmode=require",
+		config.Db,
 		config.DbUser,
 		config.DbPass,
 		config.DbHost,
 		config.DbName,
 	)
 	log.Println(conn)
-	db, err := sql.Open("postgres", conn)
+	openConnectDB := ``
+	
+	switch config.Db {
+	case `mysql`:
+		openConnectDB = `mysql`
+	case `postgresql`:
+		openConnectDB = `postgres`
+	}
+
+	db, err := sql.Open(openConnectDB, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -80,9 +91,9 @@ func NewMYSQLClient(config *PostgresConfig) (*mysqlClient, error) {
 		db.Close()
 		return nil, err
 	}
-	return &mysqlClient{
+	return &dbClient{
 		db: db,
 	}, nil
 }
 
-var _ MySQL = &mysqlClient{}
+var _ DBClient = &dbClient{}

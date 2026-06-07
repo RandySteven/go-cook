@@ -3,6 +3,9 @@ package cronjob_client
 import "context"
 
 func (s *scheduler) Run(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.cronJob.Start()
 	return nil
 }
