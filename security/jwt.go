@@ -1,7 +1,7 @@
 // Package jwt_client provides JWT (JSON Web Token) generation and management
 // for user authentication. It supports both access tokens (short-lived) and
 // refresh tokens (long-lived) using the HS256 signing method.
-package jwt_client
+package security
 
 import (
 	"os"

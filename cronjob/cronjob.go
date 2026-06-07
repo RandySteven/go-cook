@@ -25,12 +25,12 @@ type (
 )
 
 func NewScheduler(config *JobConfig) (Scheduler, error) {
-	jakartaTime, err := time.LoadLocation(config.LoadLocation)
+	schedulerTime, err := time.LoadLocation(config.LoadLocation)
 	if err != nil {
 		return nil, err
 	}
 
 	return &scheduler{
-		cronJob: cron.New(cron.WithSeconds(), cron.WithLocation(jakartaTime)),
+		cronJob: cron.New(cron.WithSeconds(), cron.WithLocation(schedulerTime)),
 	}, nil
 }
