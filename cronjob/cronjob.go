@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-redis/redis"
 	"github.com/robfig/cron/v3"
 )
 
@@ -21,6 +22,7 @@ type (
 	scheduler struct {
 		cronJob *cron.Cron
 		mu      sync.Mutex
+		redis   *redis.Client
 	}
 )
 
