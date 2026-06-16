@@ -15,11 +15,15 @@ import (
 
 type (
 	DBConfig struct {
-		Db     string
-		DbUser string
-		DbPass string
-		DbName string
-		DbHost string
+		Db              string
+		DbUser          string
+		DbPass          string
+		DbName          string
+		DbHost          string
+		MaxIdleConns    int
+		MaxOpenConns    int
+		ConnMaxLifeTime int
+		ConnMaxIdleTime int
 	}
 	// MySQL defines the interface for database operations including connection
 	// management, health checks, and migrations.
@@ -70,22 +74,25 @@ func NewMYSQLClient(config *DBConfig) (*dbClient, error) {
 	)
 	log.Println(conn)
 	openConnectDB := ``
-	
+
 	switch config.Db {
 	case `mysql`:
 		openConnectDB = `mysql`
 	case `postgresql`:
 		openConnectDB = `postgres`
+	default:
+		return nil, fmt.Errorf(`invalid db`)
 	}
 
 	db, err := sql.Open(openConnectDB, conn)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxIdleConns(10)
-	db.SetMaxOpenConns(8)
-	db.SetConnMaxLifetime(10 * time.Minute)
-	db.SetConnMaxIdleTime(8 * time.Minute)
+	db.SetMaxIdleConns(config.MaxIdleConns)
+	db.SetMaxOpenConns(config.MaxOpenConns)
+	db.SetConnMaxLifetime(time.Duration(config.ConnMaxLifeTime) * time.Minute)
+	db.SetConnMaxIdleTime(time.Duration(config.ConnMaxIdleTime) * time.Minute)
+
 	err = db.Ping()
 	if err != nil {
 		db.Close()
