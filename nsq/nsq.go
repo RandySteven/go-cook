@@ -106,7 +106,7 @@ func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc f
 		defer cancel()
 
 		if err := func() error {
-			handlerFunc(ctx, topic)
+			handlerFunc(ctx, body)
 			return nil
 		}(); err != nil {
 			log.Println("Error in handlerFunc:", err)
