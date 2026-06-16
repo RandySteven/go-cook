@@ -20,6 +20,7 @@ type (
 		DbPass          string
 		DbName          string
 		DbHost          string
+		SSLMode         string
 		MaxIdleConns    int
 		MaxOpenConns    int
 		ConnMaxLifeTime int
@@ -65,12 +66,13 @@ func (m *dbClient) Ping() error {
 //
 // Returns an error if the connection cannot be established or ping fails.
 func NewMYSQLClient(config *DBConfig) (*dbClient, error) {
-	conn := fmt.Sprintf("%s://%s:%s@%s/%s?sslmode=require",
+	conn := fmt.Sprintf("%s://%s:%s@%s/%s?sslmode=%s",
 		config.Db,
 		config.DbUser,
 		config.DbPass,
 		config.DbHost,
 		config.DbName,
+		config.SSLMode,
 	)
 	log.Println(conn)
 	openConnectDB := ``
