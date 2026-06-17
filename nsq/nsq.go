@@ -30,8 +30,6 @@ type (
 	Nsq interface {
 		// Publish sends a message to the specified topic.
 		Publish(ctx context.Context, topic string, body []byte) error
-		// Consume reads a message from the specified topic.
-		Consume(ctx context.Context, topic string) (string, error)
 		// RegisterConsumer registers a handler function for a topic.
 		RegisterConsumer(topic string, channel string, handlerFunc func(context.Context, string)) error
 	}
@@ -48,11 +46,6 @@ type (
 	// Publish defines the publish-only subset of NSQ operations.
 	Publish interface {
 		Publish(ctx context.Context, topic string, body []byte) error
-	}
-
-	// Consume defines the consume-only subset of NSQ operations.
-	Consume interface {
-		Consume(ctx context.Context, topic string) (string, error)
 	}
 )
 
@@ -73,6 +66,10 @@ func NewNsqClient(cfg *NSQConfig) (*nsqClient, error) {
 	producer, err := nsq.NewProducer(addr, nsqConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create NSQ producer: %w", err)
+	}
+
+	if err := producer.Ping(); err != nil {
+		return nil, fmt.Errorf("nsqd unreachable at %s: %w", addr, err)
 	}
 
 	lookupd := fmt.Sprintf("%s:%s", cfg.NSQDHost, cfg.LookupdHttpPort)
@@ -106,7 +103,7 @@ func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc f
 		defer cancel()
 
 		if err := func() error {
-			handlerFunc(ctx, topic)
+			handlerFunc(ctx, body)
 			return nil
 		}(); err != nil {
 			log.Println("Error in handlerFunc:", err)
@@ -117,11 +114,9 @@ func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc f
 		return nil
 	}), n.concurrentConsumer)
 
-	lookupAddr := fmt.Sprintf("%s:%s", n.config.NSQDHost, n.config.LookupdHttpPort)
-	log.Println("Connecting to nsqlookupd at", lookupAddr)
-
-	if err := consumer.ConnectToNSQLookupd(lookupAddr); err != nil {
-		return fmt.Errorf("failed to connect to NSQ lookupd: %w", err)
+	nsqdAddr := fmt.Sprintf("%s:%s", n.config.NSQDHost, n.config.NSQDTCPPort)
+	if err := consumer.ConnectToNSQD(nsqdAddr); err != nil {
+		return fmt.Errorf("failed to connect to nsqd: %w", err)
 	}
 
 	log.Println("NSQ consumer registered and running... for topic ", topic)
