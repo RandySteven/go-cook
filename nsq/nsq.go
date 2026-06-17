@@ -75,6 +75,10 @@ func NewNsqClient(cfg *NSQConfig) (*nsqClient, error) {
 		return nil, fmt.Errorf("failed to create NSQ producer: %w", err)
 	}
 
+	if err := producer.Ping(); err != nil {
+		return nil, fmt.Errorf("nsqd unreachable at %s: %w", addr, err)
+	}
+
 	lookupd := fmt.Sprintf("%s:%s", cfg.NSQDHost, cfg.LookupdHttpPort)
 
 	return &nsqClient{
