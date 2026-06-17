@@ -6,7 +6,6 @@ package db_client
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"time"
 
 	_ "github.com/jackc/pgx/v5"
@@ -76,6 +75,10 @@ func NewMYSQLClient(config *DBConfig) (*dbClient, error) {
 	default:
 		return nil, fmt.Errorf(`invalid db`)
 	}
+	sslMode := config.SSLMode
+	if sslMode == `` {
+		sslMode = `prefer`
+	}
 
 	conn := fmt.Sprintf("%s://%s:%s@%s/%s?sslmode=%s",
 		config.Db,
@@ -85,8 +88,6 @@ func NewMYSQLClient(config *DBConfig) (*dbClient, error) {
 		config.DbName,
 		config.SSLMode,
 	)
-	log.Println(conn)
-
 	db, err := sql.Open(openConnectDB, conn)
 	if err != nil {
 		return nil, err
