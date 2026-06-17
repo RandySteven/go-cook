@@ -77,7 +77,12 @@ func NewMYSQLClient(config *DBConfig) (*dbClient, error) {
 	}
 	sslMode := config.SSLMode
 	if sslMode == `` {
-		sslMode = `prefer`
+		sslMode = `require`
+	}
+	switch sslMode {
+	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
+	default:
+		return nil, fmt.Errorf(`invalid sslmode`)
 	}
 
 	conn := fmt.Sprintf("%s://%s:%s@%s/%s?sslmode=%s",
