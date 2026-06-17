@@ -75,6 +75,10 @@ func NewNsqClient(cfg *NSQConfig) (*nsqClient, error) {
 		return nil, fmt.Errorf("failed to create NSQ producer: %w", err)
 	}
 
+	if err := producer.Ping(); err != nil {
+		return nil, fmt.Errorf("nsqd unreachable at %s: %w", addr, err)
+	}
+
 	lookupd := fmt.Sprintf("%s:%s", cfg.NSQDHost, cfg.LookupdHttpPort)
 
 	return &nsqClient{
@@ -106,7 +110,7 @@ func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc f
 		defer cancel()
 
 		if err := func() error {
-			handlerFunc(ctx, topic)
+			handlerFunc(ctx, body)
 			return nil
 		}(); err != nil {
 			log.Println("Error in handlerFunc:", err)
@@ -117,11 +121,9 @@ func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc f
 		return nil
 	}), n.concurrentConsumer)
 
-	lookupAddr := fmt.Sprintf("%s:%s", n.config.NSQDHost, n.config.LookupdHttpPort)
-	log.Println("Connecting to nsqlookupd at", lookupAddr)
-
-	if err := consumer.ConnectToNSQLookupd(lookupAddr); err != nil {
-		return fmt.Errorf("failed to connect to NSQ lookupd: %w", err)
+	nsqdAddr := fmt.Sprintf("%s:%s", n.config.NSQDHost, n.config.NSQDTCPPort)
+	if err := consumer.ConnectToNSQD(nsqdAddr); err != nil {
+		return fmt.Errorf("failed to connect to nsqd: %w", err)
 	}
 
 	log.Println("NSQ consumer registered and running... for topic ", topic)
