@@ -117,11 +117,9 @@ func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc f
 		return nil
 	}), n.concurrentConsumer)
 
-	lookupAddr := fmt.Sprintf("%s:%s", n.config.NSQDHost, n.config.LookupdHttpPort)
-	log.Println("Connecting to nsqlookupd at", lookupAddr)
-
-	if err := consumer.ConnectToNSQLookupd(lookupAddr); err != nil {
-		return fmt.Errorf("failed to connect to NSQ lookupd: %w", err)
+	nsqdAddr := fmt.Sprintf("%s:%s", n.config.NSQDHost, n.config.NSQDTCPPort)
+	if err := consumer.ConnectToNSQD(nsqdAddr); err != nil {
+		return fmt.Errorf("failed to connect to nsqd: %w", err)
 	}
 
 	log.Println("NSQ consumer registered and running... for topic ", topic)
