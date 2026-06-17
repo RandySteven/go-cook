@@ -30,8 +30,6 @@ type (
 	Nsq interface {
 		// Publish sends a message to the specified topic.
 		Publish(ctx context.Context, topic string, body []byte) error
-		// Consume reads a message from the specified topic.
-		Consume(ctx context.Context, topic string) (string, error)
 		// RegisterConsumer registers a handler function for a topic.
 		RegisterConsumer(topic string, channel string, handlerFunc func(context.Context, string)) error
 	}
@@ -48,11 +46,6 @@ type (
 	// Publish defines the publish-only subset of NSQ operations.
 	Publish interface {
 		Publish(ctx context.Context, topic string, body []byte) error
-	}
-
-	// Consume defines the consume-only subset of NSQ operations.
-	Consume interface {
-		Consume(ctx context.Context, topic string) (string, error)
 	}
 )
 
