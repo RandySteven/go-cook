@@ -86,7 +86,7 @@ func NewMYSQLClient(config *DBConfig) (*dbClient, error) {
 		config.DbPass,
 		config.DbHost,
 		config.DbName,
-		config.SSLMode,
+		sslMode,
 	)
 	db, err := sql.Open(openConnectDB, conn)
 	if err != nil {
