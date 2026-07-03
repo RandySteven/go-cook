@@ -6,7 +6,6 @@ package db_client
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"time"
 
 	_ "github.com/jackc/pgx/v5"
@@ -20,6 +19,7 @@ type (
 		DbPass          string
 		DbName          string
 		DbHost          string
+		SSLMode         string
 		MaxIdleConns    int
 		MaxOpenConns    int
 		ConnMaxLifeTime int
@@ -65,14 +65,6 @@ func (m *dbClient) Ping() error {
 //
 // Returns an error if the connection cannot be established or ping fails.
 func NewMYSQLClient(config *DBConfig) (*dbClient, error) {
-	conn := fmt.Sprintf("%s://%s:%s@%s/%s?sslmode=require",
-		config.Db,
-		config.DbUser,
-		config.DbPass,
-		config.DbHost,
-		config.DbName,
-	)
-	log.Println(conn)
 	openConnectDB := ``
 
 	switch config.Db {
@@ -83,7 +75,24 @@ func NewMYSQLClient(config *DBConfig) (*dbClient, error) {
 	default:
 		return nil, fmt.Errorf(`invalid db`)
 	}
+	sslMode := config.SSLMode
+	if sslMode == `` {
+		sslMode = `require`
+	}
+	switch sslMode {
+	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
+	default:
+		return nil, fmt.Errorf(`invalid sslmode`)
+	}
 
+	conn := fmt.Sprintf("%s://%s:%s@%s/%s?sslmode=%s",
+		config.Db,
+		config.DbUser,
+		config.DbPass,
+		config.DbHost,
+		config.DbName,
+		sslMode,
+	)
 	db, err := sql.Open(openConnectDB, conn)
 	if err != nil {
 		return nil, err
