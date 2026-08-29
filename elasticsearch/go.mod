@@ -1,4 +1,4 @@
-module github.com/RandySteven/go-cook/elasticsearch_client
+module github.com/RandySteven/go-cook/elasticsearch
 
 go 1.26.1
 
