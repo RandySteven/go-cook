@@ -18,6 +18,11 @@ const (
 	deleteQuery = `DELETE`
 )
 
+const (
+	MySQL = iota + 1
+	PostgreSQL
+)
+
 type (
 	Many2ManyRepository[T any] interface {
 		Save(ctx context.Context, entity []*T) (result *T, err error)
@@ -68,6 +73,15 @@ func QueryValidation(query string, command string) error {
 	return nil
 }
 
+func CheckDriverBasedExpression(query string) int {
+	if strings.Contains("?", query) {
+		return MySQL
+	} else if strings.Contains("$", query) {
+		return PostgreSQL
+	}
+	return 0
+}
+
 // Save executes an INSERT query and returns the last inserted ID.
 // It uses prepared statements for safe query execution.
 // Type parameter T is unused but provided for consistency with other repository functions.
@@ -76,6 +90,17 @@ func QueryValidation(query string, command string) error {
 //
 //	id, err := Save[User](ctx, db, insertQuery, name, email)
 func Save[T any](ctx context.Context, db Trigger, query string, requests ...any) (*uint64, error) {
+	switch CheckDriverBasedExpression(query) {
+	case MySQL:
+		return saveMySQL[T](ctx, db, query, requests...)
+	case PostgreSQL:
+		return savePostgres[T](ctx, db, query, requests...)
+	default:
+		return nil, sql.ErrConnDone
+	}
+}
+
+func saveMySQL[T any](ctx context.Context, db Trigger, query string, requests ...any) (*uint64, error) {
 	err := QueryValidation(query, insertQuery)
 	if err != nil {
 		return nil, err
@@ -101,6 +126,31 @@ func Save[T any](ctx context.Context, db Trigger, query string, requests ...any)
 	}
 	uid := uint64(id)
 	return &uid, nil
+}
+
+// This method only for handling PostgresScenario
+func savePostgres[T any](ctx context.Context, db Trigger, query string, requests ...any) (*uint64, error) {
+	err := QueryValidation(query, insertQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	stmt, err := db.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+
+	var id uint64
+
+	// Execute the insert statement
+	err = stmt.QueryRowContext(ctx, requests...).Scan(&id)
+	if err != nil {
+		log.Println("exec context tidak aman : ", err)
+		return nil, err
+	}
+
+	return &id, nil
 }
 
 // FindAll executes a SELECT query and returns all matching rows as a slice of pointers.
