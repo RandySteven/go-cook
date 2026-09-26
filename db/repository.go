@@ -74,10 +74,12 @@ func QueryValidation(query string, command string) error {
 }
 
 func CheckDriverBasedExpression(query string) int {
-	if strings.Contains("?", query) {
+	if strings.Contains(query, "?") {
 		return MySQL
+	} else if strings.Contains(query, "$") {
+		return PostgreSQL
 	}
-	return PostgreSQL
+	return 0
 }
 
 // Save executes an INSERT query and returns the last inserted ID.
@@ -140,12 +142,12 @@ func savePostgres[T any](ctx context.Context, db Trigger, query string, requests
 	}
 	defer stmt.Close()
 
-	var id uint64
+	var id = uint64(0)
 
 	// Execute the insert statement
 	err = stmt.QueryRowContext(ctx, requests...).Scan(&id)
 	if err != nil {
-		log.Println("exec context tidak aman : ", err)
+		log.Println("failed to get id : ", err)
 		return nil, err
 	}
 
