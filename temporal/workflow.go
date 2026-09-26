@@ -16,7 +16,6 @@ type (
 )
 
 type (
-	activityFunction func(ctx context.Context, executionData ExecutionWorkflow) (ExecutionWorkflow, error)
 	// Navigable allows the Execute state machine to read which activity
 	// should run next. Any state struct that implements this interface
 	// enables branching in the pipeline.
@@ -40,7 +39,7 @@ type (
 	ActivityExecutionInfo struct {
 		ActivityName    string
 		SignalName      string
-		ActivityFn      activityFunction
+		ActivityFn      interface{}
 		ActivityOptions *workflow.ActivityOptions
 		NextActivities  []string
 	}
@@ -67,7 +66,7 @@ type (
 		// AddTransitionActivityWithOptions registers an activity with the Temporal worker and adds it
 		// to the sequential execution pipeline. Activities run in the order they are added.
 		// It is used to add an activity with options to the sequential execution pipeline.
-		AddTransitionActivityWithOptions(activityName string, signalName string, activityFn activityFunction, options *workflow.ActivityOptions, nextActivities ...string)
+		AddTransitionActivityWithOptions(activityName string, signalName string, activityFn interface{}, options *workflow.ActivityOptions, nextActivities ...string)
 
 		// RegisterWorkflow registers a workflow with the Temporal worker.
 		RegisterWorkflow(name string, fn interface{})
@@ -238,7 +237,7 @@ func (w *WorkflowExecutionData) GetWorkflowExecutionData(wfCtx workflow.Context,
 	return nil
 }
 
-func (w *WorkflowExecutionData) AddTransitionActivityWithOptions(activityName string, signalName string, activityFn activityFunction, options *workflow.ActivityOptions, nextActivities ...string) {
+func (w *WorkflowExecutionData) AddTransitionActivityWithOptions(activityName string, signalName string, activityFn interface{}, options *workflow.ActivityOptions, nextActivities ...string) {
 	w.temporalClient.RegisterActivity(ActivityDefinition{
 		Name: activityName,
 		Fn:   activityFn,
