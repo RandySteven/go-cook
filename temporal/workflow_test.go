@@ -10,23 +10,36 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-type navState struct {
+type executionWorkflow struct {
 	Activity string
 }
 
-func (n *navState) SetActivity(name string) { n.Activity = name }
-func (n *navState) GetActivity() string     { return n.Activity }
+var _ ExecutionWorkflow = &executionWorkflow{}
 
-func identityActivity(ctx context.Context, s *navState) (*navState, error) {
+func (n *executionWorkflow) SetActivity(name string) { n.Activity = name }
+func (n *executionWorkflow) GetActivity() string     { return n.Activity }
+
+// identityActivity, branchActivity, and failActivity must be declared
+// against the ExecutionWorkflow interface (not the concrete
+// *executionWorkflow type) to satisfy the activityFunction type:
+//
+//	type activityFunction func(ctx context.Context, executionData ExecutionWorkflow) (ExecutionWorkflow, error)
+//
+// Go does not implicitly convert a function typed with a concrete
+// parameter into one typed with the interface that parameter implements,
+// so the previous signatures (`s *executionWorkflow`) failed to satisfy
+// activityFunction and would not compile when passed to
+// AddTransitionActivityWithOptions.
+func identityActivity(ctx context.Context, s ExecutionWorkflow) (ExecutionWorkflow, error) {
 	return s, nil
 }
 
-func branchActivity(ctx context.Context, s *navState) (*navState, error) {
-	s.Activity = "step2"
+func branchActivity(ctx context.Context, s ExecutionWorkflow) (ExecutionWorkflow, error) {
+	s.SetActivity("step2")
 	return s, nil
 }
 
-func failActivity(ctx context.Context, s *navState) (*navState, error) {
+func failActivity(ctx context.Context, s ExecutionWorkflow) (ExecutionWorkflow, error) {
 	return nil, errors.New("activity failed")
 }
 
@@ -124,7 +137,7 @@ func TestExecuteSingleActivity(t *testing.T) {
 	we.AddTransitionActivityWithOptions("step1", "", identityActivity, opts)
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
-		return we.Execute(ctx, &navState{})
+		return we.Execute(ctx, &executionWorkflow{})
 	})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
@@ -146,7 +159,7 @@ func TestExecuteBranchesToNextActivity(t *testing.T) {
 	we.AddTransitionActivityWithOptions("step2", "", identityActivity, &workflow.ActivityOptions{StartToCloseTimeout: time.Second})
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
-		return we.Execute(ctx, &navState{})
+		return we.Execute(ctx, &executionWorkflow{})
 	})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
@@ -163,7 +176,7 @@ func TestExecuteActivityFailure(t *testing.T) {
 	we.AddTransitionActivityWithOptions("step1", "", failActivity, &workflow.ActivityOptions{StartToCloseTimeout: time.Second})
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
-		return we.Execute(ctx, &navState{})
+		return we.Execute(ctx, &executionWorkflow{})
 	})
 	if env.GetWorkflowError() == nil {
 		t.Fatal("expected activity failure")

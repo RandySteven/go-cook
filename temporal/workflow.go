@@ -16,6 +16,7 @@ type (
 )
 
 type (
+	activityFunction func(ctx context.Context, executionData ExecutionWorkflow) (ExecutionWorkflow, error)
 	// Navigable allows the Execute state machine to read which activity
 	// should run next. Any state struct that implements this interface
 	// enables branching in the pipeline.
@@ -27,7 +28,7 @@ type (
 	// After branching, execution stops (the branch path runs to completion,
 	// then Execute returns). The workflow function can inspect the state to
 	// decide what to do next.
-	NavigatableActivity interface {
+	ExecutionWorkflow interface { //Renamed to ExecutionWorkflow interface
 		SetActivity(activityName string)
 		GetActivity() string
 	}
@@ -38,7 +39,7 @@ type (
 	ActivityExecutionInfo struct {
 		ActivityName    string
 		SignalName      string
-		ActivityFn      interface{}
+		ActivityFn      activityFunction
 		ActivityOptions *workflow.ActivityOptions
 		NextActivities  []string
 	}
@@ -65,7 +66,7 @@ type (
 		// AddTransitionActivityWithOptions registers an activity with the Temporal worker and adds it
 		// to the sequential execution pipeline. Activities run in the order they are added.
 		// It is used to add an activity with options to the sequential execution pipeline.
-		AddTransitionActivityWithOptions(activityName string, signalName string, activityFn interface{}, options *workflow.ActivityOptions, nextActivities ...string)
+		AddTransitionActivityWithOptions(activityName string, signalName string, activityFn activityFunction, options *workflow.ActivityOptions, nextActivities ...string)
 
 		// RegisterWorkflow registers a workflow with the Temporal worker.
 		RegisterWorkflow(name string, fn interface{})
@@ -137,7 +138,7 @@ func (w *WorkflowExecutionData) SignalExternalWorkflow(ctx workflow.Context, wor
 // to that activity (which must be registered via AddBranchActivity). After the branch
 // chain completes, Execute returns — it does NOT resume the sequential pipeline.
 func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData interface{}) error {
-	navigable, _ := executionData.(NavigatableActivity)
+	navigable, _ := executionData.(ExecutionWorkflow)
 	currActivity := w.activity[w.firstActivity]
 
 	w.StartedAt = time.Now()
@@ -189,7 +190,7 @@ func (w *WorkflowExecutionData) SignalWorkflow(ctx context.Context, workflowID s
 }
 
 // runActivity executes a single activity and handles its signal if present.
-func (w *WorkflowExecutionData) runActivity(ctx workflow.Context, info *ActivityExecutionInfo, executionData interface{}, navigable NavigatableActivity) error {
+func (w *WorkflowExecutionData) runActivity(ctx workflow.Context, info *ActivityExecutionInfo, executionData interface{}, navigable ExecutionWorkflow) error {
 	activityCtx := ctx
 
 	if info.ActivityOptions != nil {
@@ -236,7 +237,7 @@ func (w *WorkflowExecutionData) GetWorkflowExecutionData(wfCtx workflow.Context,
 	return nil
 }
 
-func (w *WorkflowExecutionData) AddTransitionActivityWithOptions(activityName string, signalName string, activityFn interface{}, options *workflow.ActivityOptions, nextActivities ...string) {
+func (w *WorkflowExecutionData) AddTransitionActivityWithOptions(activityName string, signalName string, activityFn activityFunction, options *workflow.ActivityOptions, nextActivities ...string) {
 	w.temporalClient.RegisterActivity(ActivityDefinition{
 		Name: activityName,
 		Fn:   activityFn,
@@ -256,7 +257,9 @@ func (w *WorkflowExecutionData) AddTransitionActivityWithOptions(activityName st
 	}
 
 	for _, nextActivity := range nextActivities {
-		w.activity[nextActivity] = &ActivityExecutionInfo{}
+		if _, exists := w.activity[nextActivity]; !exists {
+			w.activity[nextActivity] = &ActivityExecutionInfo{}
+		}
 	}
 }
 
