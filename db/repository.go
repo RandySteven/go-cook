@@ -136,18 +136,10 @@ func savePostgres[T any](ctx context.Context, db Trigger, query string, requests
 		return nil, err
 	}
 
-	stmt, err := db.PrepareContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-
 	var id = uint64(0)
-
-	// Execute the insert statement
-	err = stmt.QueryRowContext(ctx, requests...).Scan(&id)
+	err = db.QueryRowContext(ctx, query, requests...).Scan(&id)
 	if err != nil {
-		log.Println("failed to get id : ", err)
+		log.Println("Error insert query postgres ", err)
 		return nil, err
 	}
 
