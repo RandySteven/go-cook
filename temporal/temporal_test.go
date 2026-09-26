@@ -47,7 +47,7 @@ func (m *mockTemporal) SignalWorkflow(ctx context.Context, workflowID string, ru
 	return m.signalErr
 }
 
-func (m *mockTemporal) QueryWorkflow(ctx context.Context, workflowID string, queryType string, args ...interface{}) (interface{}, error) {
+func (m *mockTemporal) QueryWorkflow(ctx context.Context, workflowID string, runID string, queryType string, args ...interface{}) (interface{}, error) {
 	return m.queryVal, m.queryErr
 }
 
@@ -159,7 +159,7 @@ func TestSignalCancelQueryAndResult(t *testing.T) {
 	if err := tc.CancelWorkflow(ctx, "wf"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := tc.QueryWorkflow(ctx, "wf", "status")
+	got, err := tc.QueryWorkflow(ctx, "wf", "", "status")
 	if err != nil || got != "ok" {
 		t.Fatalf("QueryWorkflow = (%v, %v)", got, err)
 	}
@@ -170,18 +170,18 @@ func TestSignalCancelQueryAndResult(t *testing.T) {
 
 func TestQueryWorkflowErrors(t *testing.T) {
 	mockClient := &mocks.Client{}
-	mockClient.On("QueryWorkflow", mock.Anything, "wf", "", "status").Return(nil, errors.New("query failed"))
+	mockClient.On("QueryWorkflow", mock.Anything, "wf", "", "", "status").Return(nil, errors.New("query failed"))
 	tc := &temporalClient{client: mockClient}
-	if _, err := tc.QueryWorkflow(context.Background(), "wf", "status"); err == nil {
+	if _, err := tc.QueryWorkflow(context.Background(), "wf", "", "status"); err == nil {
 		t.Fatal("expected query error")
 	}
 
 	mockValue := &mocks.Value{}
 	mockClient2 := &mocks.Client{}
-	mockClient2.On("QueryWorkflow", mock.Anything, "wf", "", "status").Return(mockValue, nil)
+	mockClient2.On("QueryWorkflow", mock.Anything, "wf", "", "", "status").Return(mockValue, nil)
 	mockValue.On("Get", mock.Anything).Return(errors.New("decode failed"))
 	tc2 := &temporalClient{client: mockClient2}
-	if _, err := tc2.QueryWorkflow(context.Background(), "wf", "status"); err == nil {
+	if _, err := tc2.QueryWorkflow(context.Background(), "wf", "", "status"); err == nil {
 		t.Fatal("expected decode error")
 	}
 }

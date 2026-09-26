@@ -116,8 +116,15 @@ type (
 		//WaitForAnySignal waits for any signal from the given map of signals and returns the signal name.
 		//It is used to wait for any signal from the given map of signals and returns the signal name.
 		WaitForAnySignal(ctx workflow.Context, signals map[string]interface{}) (string, error)
+
+		SetQueryHandler(ctx workflow.Context, queryName string, fn interface{}) (err error)
 	}
 )
+
+// SetQueryHandler implements [WorkflowExecution].
+func (w *WorkflowExecutionData) SetQueryHandler(ctx workflow.Context, queryName string, fn interface{}) (err error) {
+	return workflow.SetQueryHandler(ctx, queryName, fn)
+}
 
 // GetExternalWorkflowResult implements [WorkflowExecution].
 func (w *WorkflowExecutionData) GetExternalWorkflowResult(ctx workflow.Context, workflowID string, runID string, result interface{}) error {

@@ -102,7 +102,7 @@ type (
 		SignalWorkflow(ctx context.Context, workflowID string, runID string, signalName string, arg interface{}) error
 
 		// QueryWorkflow queries a running workflow for its current state.
-		QueryWorkflow(ctx context.Context, workflowID string, queryType string, args ...interface{}) (interface{}, error)
+		QueryWorkflow(ctx context.Context, workflowID string, runID string, queryType string, args ...interface{}) (interface{}, error)
 
 		// CancelWorkflow requests cancellation of a running workflow.
 		CancelWorkflow(ctx context.Context, workflowID string) error
@@ -160,8 +160,8 @@ func (t *temporalClient) SignalWorkflow(ctx context.Context, workflowID string, 
 	return t.client.SignalWorkflow(ctx, workflowID, runID, signalName, arg)
 }
 
-func (t *temporalClient) QueryWorkflow(ctx context.Context, workflowID string, queryType string, args ...interface{}) (interface{}, error) {
-	resp, err := t.client.QueryWorkflow(ctx, workflowID, "", queryType, args...)
+func (t *temporalClient) QueryWorkflow(ctx context.Context, workflowID string, runID string, queryType string, args ...interface{}) (interface{}, error) {
+	resp, err := t.client.QueryWorkflow(ctx, workflowID, runID, queryType, args...)
 	if err != nil {
 		return nil, err
 	}
