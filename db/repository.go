@@ -76,10 +76,8 @@ func QueryValidation(query string, command string) error {
 func CheckDriverBasedExpression(query string) int {
 	if strings.Contains("?", query) {
 		return MySQL
-	} else if strings.Contains("RETURNING", query) {
-		return PostgreSQL
 	}
-	return 0
+	return PostgreSQL
 }
 
 // Save executes an INSERT query and returns the last inserted ID.
