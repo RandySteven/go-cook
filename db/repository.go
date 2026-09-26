@@ -76,7 +76,7 @@ func QueryValidation(query string, command string) error {
 func CheckDriverBasedExpression(query string) int {
 	if strings.Contains("?", query) {
 		return MySQL
-	} else if strings.Contains("$", query) {
+	} else if strings.Contains("RETURNING", query) {
 		return PostgreSQL
 	}
 	return 0
