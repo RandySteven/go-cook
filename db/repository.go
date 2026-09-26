@@ -96,6 +96,7 @@ func Save[T any](ctx context.Context, db Trigger, query string, requests ...any)
 	case PostgreSQL:
 		return savePostgres[T](ctx, db, query, requests...)
 	default:
+		log.Println("The connection driver is not valid")
 		return nil, sql.ErrConnDone
 	}
 }
