@@ -2,6 +2,7 @@ package temporal_client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -11,13 +12,23 @@ import (
 )
 
 type executionWorkflow struct {
-	Activity string
+	Activity string `json:"activity"`
 }
 
 var _ ExecutionWorkflow = &executionWorkflow{}
 
 func (n *executionWorkflow) SetActivity(name string) { n.Activity = name }
 func (n *executionWorkflow) GetActivity() string     { return n.Activity }
+func (n *executionWorkflow) JSONString() (string, error) {
+	jsonBytes, err := json.Marshal(n)
+	if err != nil {
+		return "", err
+	}
+
+	// 3. Convert the byte slice into a readable string
+	jsonString := string(jsonBytes)
+	return jsonString, nil
+}
 
 // identityActivity, branchActivity, and failActivity must be declared
 // against the ExecutionWorkflow interface (not the concrete

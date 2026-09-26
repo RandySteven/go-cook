@@ -31,6 +31,7 @@ type (
 	ExecutionWorkflow interface { //Renamed to ExecutionWorkflow interface
 		SetActivity(activityName string)
 		GetActivity() string
+		JSONString() (string, error)
 	}
 
 	SignalActivity struct {
