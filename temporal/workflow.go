@@ -240,11 +240,11 @@ func (w *WorkflowExecutionData) runActivity(ctx workflow.Context, info *Activity
 		}
 	}
 
-	if info.SignalName != "" {
-		if err := w.StartChildWorkflow(ctx, w.WorkflowID, info.SignalName, executionData, executionData); err != nil {
-			return fmt.Errorf("child workflow for activity %s failed: %w", info.ActivityName, err)
-		}
-	}
+	// if info.SignalName != "" {
+	// 	if err := w.StartChildWorkflow(ctx, w.WorkflowID, info.SignalName, executionData, executionData); err != nil {
+	// 		return fmt.Errorf("child workflow for activity %s failed: %w", info.ActivityName, err)
+	// 	}
+	// }
 	return nil
 }
 
