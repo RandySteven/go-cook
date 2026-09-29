@@ -117,9 +117,20 @@ type (
 		//It is used to wait for any signal from the given map of signals and returns the signal name.
 		WaitForAnySignal(ctx workflow.Context, signals map[string]interface{}) (string, error)
 
+		//SetQueryHandler
 		SetQueryHandler(ctx workflow.Context, queryName string, fn interface{}) (err error)
+
+		SetUpdateHandlerWithOptions(ctx workflow.Context, queryName string, fn interface{}, opt workflow.UpdateHandlerOptions) (err error)
 	}
 )
+
+// SetUpdateHandlerWithOptions implements [WorkflowExecution].
+func (w *WorkflowExecutionData) SetUpdateHandlerWithOptions(ctx workflow.Context, queryName string, fn interface{}, opt workflow.UpdateHandlerOptions) (err error) {
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, queryName, fn, opt); err != nil {
+		return err
+	}
+	return nil
+}
 
 // SetQueryHandler implements [WorkflowExecution].
 func (w *WorkflowExecutionData) SetQueryHandler(ctx workflow.Context, queryName string, fn interface{}) (err error) {
