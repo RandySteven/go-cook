@@ -126,6 +126,7 @@ func (t *temporalClient) UpdateWorkflow(ctx context.Context, queryName string, w
 		WorkflowID:   workflowID,
 		RunID:        runID,
 		WaitForStage: stage,
+		UpdateName:   queryName,
 		Args:         args,
 	})
 	if err != nil {
