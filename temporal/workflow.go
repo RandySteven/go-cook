@@ -182,12 +182,13 @@ func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData inte
 
 	w.StartedAt = time.Now()
 	w.registerStatusQuery(ctx, executionData)
-	w.setExecutionStatus(ctx, executionData, StatusPending, DefaultStatusSearchAttribute)
+	statusAttr := w.statusSearchAttribute()
+	w.setExecutionStatus(ctx, executionData, StatusPending, statusAttr)
 
 	for currActivity != nil {
 		if err := w.runActivity(ctx, currActivity, executionData, navigable); err != nil {
 			if w.Status != StatusFailed && w.Status != StatusRejected {
-				w.setExecutionStatus(ctx, executionData, StatusFailed, DefaultStatusSearchAttribute)
+				w.setExecutionStatus(ctx, executionData, StatusFailed, statusAttr)
 			}
 			return err
 		}
@@ -210,7 +211,7 @@ func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData inte
 
 	w.CompletedAt = time.Now()
 	if w.Status != StatusFailed && w.Status != StatusRejected {
-		w.setExecutionStatus(ctx, executionData, StatusCompleted, DefaultStatusSearchAttribute)
+		w.setExecutionStatus(ctx, executionData, StatusCompleted, statusAttr)
 	}
 
 	return nil

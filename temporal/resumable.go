@@ -51,9 +51,11 @@ type ResumableOptions struct {
 	// Defaults to 3 so transient errors retry before parking.
 	ActivityRetryAttempts int32
 
-	// StatusSearchAttribute is upserted on each status transition so operators
-	// can filter parked workflows. Defaults to WorkflowStatus. Errors are ignored
-	// when the attribute is not registered on the server.
+	// StatusSearchAttribute, when set, is upserted on each status transition so
+	// operators can filter parked workflows in the Temporal UI. Leave empty
+	// unless this Keyword attribute is already registered on the namespace
+	// (unregistered names fail the workflow with BadSearchAttributes).
+	// Example: DefaultStatusSearchAttribute ("WorkflowStatus").
 	StatusSearchAttribute string
 
 	// WaitTimeout bounds how long to wait for a correction or approval Signal.
@@ -91,10 +93,16 @@ func (o ResumableOptions) withDefaults() ResumableOptions {
 	if o.ActivityRetryAttempts <= 0 {
 		o.ActivityRetryAttempts = defaultActivityRetryAttempts
 	}
-	if o.StatusSearchAttribute == "" {
-		o.StatusSearchAttribute = DefaultStatusSearchAttribute
-	}
 	return o
+}
+
+func (w *WorkflowExecutionData) statusSearchAttribute() string {
+	for _, info := range w.activity {
+		if info != nil && info.Resumable != nil && info.Resumable.StatusSearchAttribute != "" {
+			return info.Resumable.StatusSearchAttribute
+		}
+	}
+	return ""
 }
 
 func (w *WorkflowExecutionData) registerStatusQuery(ctx workflow.Context, executionData interface{}) {

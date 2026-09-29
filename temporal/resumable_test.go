@@ -81,6 +81,9 @@ func TestAddResumableTransitionActivityWithOptions(t *testing.T) {
 	if info.Resumable.MaxCorrectionAttempts != defaultMaxCorrectionAttempts {
 		t.Fatalf("MaxCorrectionAttempts = %d", info.Resumable.MaxCorrectionAttempts)
 	}
+	if info.Resumable.StatusSearchAttribute != "" {
+		t.Fatal("StatusSearchAttribute must stay empty unless the caller registers it")
+	}
 }
 
 func TestResumableActivityParksThenRetriesWithCorrection(t *testing.T) {
