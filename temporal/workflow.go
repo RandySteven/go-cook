@@ -121,8 +121,19 @@ type (
 		SetQueryHandler(ctx workflow.Context, queryName string, fn interface{}) (err error)
 
 		SetUpdateHandlerWithOptions(ctx workflow.Context, queryName string, fn interface{}, opt workflow.UpdateHandlerOptions) (err error)
+
+		UpdateWorkflow(ctx context.Context, queryName string, workflowID string, runID string, stage client.WorkflowUpdateStage, args ...interface{}) (interface{}, error)
 	}
 )
+
+// UpdateWorkflow implements [WorkflowExecution].
+func (w *WorkflowExecutionData) UpdateWorkflow(ctx context.Context, queryName string, workflowID string, runID string, stage client.WorkflowUpdateStage, args ...interface{}) (interface{}, error) {
+	handle, err := w.temporalClient.UpdateWorkflow(ctx, queryName, workflowID, runID, stage, args...)
+	if err != nil {
+		return nil, err
+	}
+	return handle, nil
+}
 
 // SetUpdateHandlerWithOptions implements [WorkflowExecution].
 func (w *WorkflowExecutionData) SetUpdateHandlerWithOptions(ctx workflow.Context, queryName string, fn interface{}, opt workflow.UpdateHandlerOptions) (err error) {
