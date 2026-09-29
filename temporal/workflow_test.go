@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 )
@@ -30,27 +31,18 @@ func (n *executionWorkflow) JSONString() (string, error) {
 	return jsonString, nil
 }
 
-// identityActivity, branchActivity, and failActivity must be declared
-// against the ExecutionWorkflow interface (not the concrete
-// *executionWorkflow type) to satisfy the activityFunction type:
-//
-//	type activityFunction func(ctx context.Context, executionData ExecutionWorkflow) (ExecutionWorkflow, error)
-//
-// Go does not implicitly convert a function typed with a concrete
-// parameter into one typed with the interface that parameter implements,
-// so the previous signatures (`s *executionWorkflow`) failed to satisfy
-// activityFunction and would not compile when passed to
-// AddTransitionActivityWithOptions.
-func identityActivity(ctx context.Context, s ExecutionWorkflow) (ExecutionWorkflow, error) {
+// identityActivity, branchActivity, and failActivity use the concrete
+// *executionWorkflow type so Temporal can serialize activity input/output.
+func identityActivity(ctx context.Context, s *executionWorkflow) (*executionWorkflow, error) {
 	return s, nil
 }
 
-func branchActivity(ctx context.Context, s ExecutionWorkflow) (ExecutionWorkflow, error) {
+func branchActivity(ctx context.Context, s *executionWorkflow) (*executionWorkflow, error) {
 	s.SetActivity("step2")
 	return s, nil
 }
 
-func failActivity(ctx context.Context, s ExecutionWorkflow) (ExecutionWorkflow, error) {
+func failActivity(ctx context.Context, s *executionWorkflow) (*executionWorkflow, error) {
 	return nil, errors.New("activity failed")
 }
 
@@ -184,7 +176,10 @@ func TestExecuteActivityFailure(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddTransitionActivityWithOptions("step1", "", failActivity, &workflow.ActivityOptions{StartToCloseTimeout: time.Second})
+	we.AddTransitionActivityWithOptions("step1", "", failActivity, &workflow.ActivityOptions{
+		StartToCloseTimeout: time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
 		return we.Execute(ctx, &executionWorkflow{})

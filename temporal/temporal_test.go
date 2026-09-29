@@ -65,6 +65,10 @@ func (m *mockTemporal) Start() error {
 
 func (m *mockTemporal) Stop() {}
 
+func (m *mockTemporal) UpdateWorkflow(ctx context.Context, queryName, workflowID, runID string, stage client.WorkflowUpdateStage, args interface{}) (client.WorkflowUpdateHandle, error) {
+	return nil, nil
+}
+
 func TestTemporalClientImplementsInterface(t *testing.T) {
 	var _ Temporal = &temporalClient{}
 	var _ Temporal = &mockTemporal{}
@@ -170,7 +174,7 @@ func TestSignalCancelQueryAndResult(t *testing.T) {
 
 func TestQueryWorkflowErrors(t *testing.T) {
 	mockClient := &mocks.Client{}
-	mockClient.On("QueryWorkflow", mock.Anything, "wf", "", "", "status").Return(nil, errors.New("query failed"))
+	mockClient.On("QueryWorkflow", mock.Anything, "wf", "", "status").Return(nil, errors.New("query failed"))
 	tc := &temporalClient{client: mockClient}
 	if _, err := tc.QueryWorkflow(context.Background(), "wf", "", "status"); err == nil {
 		t.Fatal("expected query error")
@@ -178,7 +182,7 @@ func TestQueryWorkflowErrors(t *testing.T) {
 
 	mockValue := &mocks.Value{}
 	mockClient2 := &mocks.Client{}
-	mockClient2.On("QueryWorkflow", mock.Anything, "wf", "", "", "status").Return(mockValue, nil)
+	mockClient2.On("QueryWorkflow", mock.Anything, "wf", "", "status").Return(mockValue, nil)
 	mockValue.On("Get", mock.Anything).Return(errors.New("decode failed"))
 	tc2 := &temporalClient{client: mockClient2}
 	if _, err := tc2.QueryWorkflow(context.Background(), "wf", "", "status"); err == nil {
