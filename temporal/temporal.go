@@ -110,7 +110,7 @@ type (
 		// GetWorkflowResult blocks until the workflow completes and returns the result.
 		GetWorkflowResult(ctx context.Context, workflowID string, runID string, result interface{}) error
 
-		UpdateWorkflow(ctx context.Context, queryName, workflowID, runID string, stage client.WorkflowUpdateStage, args ...interface{}) (client.WorkflowUpdateHandle, error)
+		UpdateWorkflow(ctx context.Context, queryName, workflowID, runID string, stage client.WorkflowUpdateStage, args interface{}) (client.WorkflowUpdateHandle, error)
 
 		// Start starts the internal worker that polls for tasks.
 		Start() error
@@ -121,13 +121,13 @@ type (
 )
 
 // UpdateWorkflow implements [Temporal].
-func (t *temporalClient) UpdateWorkflow(ctx context.Context, queryName string, workflowID string, runID string, stage client.WorkflowUpdateStage, args ...interface{}) (client.WorkflowUpdateHandle, error) {
+func (t *temporalClient) UpdateWorkflow(ctx context.Context, queryName string, workflowID string, runID string, stage client.WorkflowUpdateStage, args interface{}) (client.WorkflowUpdateHandle, error) {
 	handle, err := t.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID:   workflowID,
 		RunID:        runID,
 		WaitForStage: stage,
 		UpdateName:   queryName,
-		Args:         args,
+		Args:         []interface{}{args},
 	})
 	if err != nil {
 		return nil, err
