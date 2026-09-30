@@ -204,7 +204,9 @@ accessToken, refreshToken := security.GenerateTokens(userID, email)
 
 ### `temporal` — Workflow orchestration
 
-**Responsibility:** Temporal client and worker setup, workflow lifecycle management, sequential activity pipelines with branching, and signal handling.
+**Responsibility:** Temporal client and worker setup, workflow lifecycle management, sequential activity pipelines with branching, resumable (pause-on-failure) activities, and signal handling.
+
+Full API and workflow patterns: [`temporal/README.md`](temporal/README.md).
 
 **Key types**
 
