@@ -30,7 +30,7 @@ The namespace in `TemporalConfig` must already exist. If you use `temporal serve
 |------|----------------|
 | `temporal.go` | Client, worker, start/signal/query/cancel/update |
 | `workflow.go` | Activity pipeline (`Execute`), transitions, signals inside a workflow |
-| `resumable.go` | Park-on-failure, correction signal, optional approval |
+| `resumable.go` | Signal-gated wait, correction retry, optional approval |
 | `signals.go` | Typed async signal consumer (`On`) |
 | `nexus/` | Nexus stub (not implemented) |
 
@@ -136,20 +136,18 @@ exec.AddTransitionActivityWithOptions("fulfill", "", FulfillActivity, opts)
 
 Default `AddTransitionActivityWithOptions` steps. If the activity fails after Temporal retries, `Execute` returns the error and sets status `FAILED`.
 
-### 4. Resumable activity (pause on failure)
+### 4. Signal-gated activity (pause until `signalEvent`)
 
-Register with `AddResumableTransitionActivityWithOptions`. After retries are exhausted, the workflow parks (`AWAITING_CORRECTION`) until an operator sends a correction signal, then re-runs **the same step** and continues the state machine.
+Pass a non-empty `signalEvent` to `AddTransitionActivityWithOptions`. `Execute` parks (`AWAITING_CORRECTION`) until that Signal arrives, then runs the activity. After a failure it waits on the **same** `signalEvent`, applies the payload, and retries that step.
 
 ```go
-exec.AddResumableTransitionActivityWithOptions(
+exec.AddTransitionActivityWithOptions(
     "transfer",
+    "retryWithCorrection",
     TransferActivity,
     &workflow.ActivityOptions{
         StartToCloseTimeout: 30 * time.Second,
         RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
-    },
-    temporal_client.ResumableOptions{
-        ApprovalSignal: temporal_client.DefaultApprovalSignal, // optional
     },
     "notify",
 )
@@ -203,9 +201,9 @@ temporal_client.ResumableOptions{
 }
 ```
 
-### 5. Human approval after a resumable step
+### 5. Human approval after a signal-gated step
 
-If `ApprovalSignal` is set, success of that step parks again (`AWAITING_APPROVAL`). `true` continues the pipeline; `false` sets `REJECTED` and fails `Execute`.
+If `ApprovalSignal` is set on that step’s `ResumableOptions`, success parks again (`AWAITING_APPROVAL`). `true` continues the pipeline; `false` sets `REJECTED` and fails `Execute`.
 
 ### 6. Signal wait (single)
 
@@ -302,8 +300,7 @@ Created by `NewWorkflowExecution(temporalClient)`.
 |----------|--------|----------------|
 | `NewWorkflowExecution` | `workflow.go` | Allocates the activity map and a `SignalConsumer`. |
 | `Execute` | `workflow.go` | Runs the pipeline from `firstActivity`. Registers `getStatus`. Sets `PENDING` then each step; `COMPLETED` on success. Branching uses `ExecutionWorkflow.GetActivity()`. |
-| `AddTransitionActivityWithOptions` | `workflow.go` | Registers the activity on the worker and adds a fail-fast graph node. First call sets the start node. Unknown `nextActivities` get placeholder entries until registered. |
-| `AddResumableTransitionActivityWithOptions` | `workflow.go` | Same as above, plus `ResumableOptions` (correction signal stored as `SignalName`). |
+| `AddTransitionActivityWithOptions` | `workflow.go` | Registers the activity on the worker and adds a graph node. Empty `signalEvent` is fail-fast. Non-empty `signalEvent` waits for that Signal before each attempt. First call sets the start node. Unknown `nextActivities` get placeholder entries until registered. |
 | `RegisterWorkflow` | `workflow.go` | Delegates to the Temporal client. |
 | `StartWorkflow` | `workflow.go` | Delegates to the client. |
 | `GetWorkflowResult` | `workflow.go` | Delegates to the client. |
@@ -344,10 +341,10 @@ Implement on pipeline state for branching:
 
 `runResumableActivity` loop:
 
-1. Status `EXECUTING`, run activity.
-2. Success → optional approval wait → branch.
-3. Failure → increment correction count; if over max, `FAILED`.
-4. Else `AWAITING_CORRECTION`, `workflow.Await` on the correction channel, apply payload, retry the same activity.
+1. Status `AWAITING_CORRECTION`, wait for this step’s `signalEvent`.
+2. Apply a non-null payload onto `executionData`, then status `EXECUTING` and run the activity.
+3. Success → optional approval wait → branch.
+4. Failure → increment correction count; if over max, `FAILED`. Else wait on the same `signalEvent` again.
 
 ### Signals (`signals.go`)
 

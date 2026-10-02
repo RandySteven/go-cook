@@ -16,19 +16,19 @@ type executionWorkflow struct {
 	Activity string `json:"activity"`
 }
 
-var _ ExecutionWorkflow = &executionWorkflow{}
+var _ ExecutionData = &executionWorkflow{}
 
 func (n *executionWorkflow) SetActivity(name string) { n.Activity = name }
 func (n *executionWorkflow) GetActivity() string     { return n.Activity }
-func (n *executionWorkflow) JSONString() (string, error) {
-	jsonBytes, err := json.Marshal(n)
-	if err != nil {
-		return "", err
-	}
-
-	// 3. Convert the byte slice into a readable string
-	jsonString := string(jsonBytes)
-	return jsonString, nil
+func (n *executionWorkflow) Marshal() ([]byte, error) {
+	return json.Marshal(n)
+}
+func (n *executionWorkflow) Unmarshal(data []byte) error {
+	return json.Unmarshal(data, n)
+}
+func (n *executionWorkflow) Clone() ExecutionData {
+	c := *n
+	return &c
 }
 
 // identityActivity, branchActivity, and failActivity use the concrete
@@ -69,8 +69,11 @@ func TestAddTransitionActivityWithOptions(t *testing.T) {
 	if len(mt.activities) != 1 || mt.activities[0].Name != "step1" {
 		t.Fatalf("registered activities = %+v", mt.activities)
 	}
-	if we.activity["step1"] == nil || we.activity["step2"] == nil {
-		t.Fatal("expected step1 and placeholder step2")
+	if we.activity["step1"].SignalEvent != "sig" {
+		t.Fatalf("SignalEvent = %q, want sig", we.activity["step1"].SignalEvent)
+	}
+	if we.activity["step1"].Resumable == nil || we.activity["step1"].Resumable.CorrectionSignal != "sig" {
+		t.Fatal("non-empty signalEvent should attach resumable options")
 	}
 
 	we.AddTransitionActivityWithOptions("step2", "", identityActivity, nil)

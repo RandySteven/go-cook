@@ -15,33 +15,30 @@ import (
 type resumableState struct {
 	Activity string `json:"activity"`
 	Account  string `json:"account"`
-	status   string
 }
 
-var (
-	_ ExecutionWorkflow  = &resumableState{}
-	_ StatusReporter     = &resumableState{}
-	_ CorrectionApplier  = &resumableState{}
-)
+var _ ExecutionData = &resumableState{}
 
 func (s *resumableState) SetActivity(name string) { s.Activity = name }
 func (s *resumableState) GetActivity() string     { return s.Activity }
-func (s *resumableState) JSONString() (string, error) {
-	b, err := json.Marshal(s)
-	return string(b), err
+func (s *resumableState) Marshal() ([]byte, error) {
+	return json.Marshal(s)
 }
-func (s *resumableState) SetStatus(status string) { s.status = status }
-func (s *resumableState) GetStatus() string       { return s.status }
-func (s *resumableState) ApplyCorrection(payload json.RawMessage) error {
+func (s *resumableState) Unmarshal(data []byte) error {
+	// Partial correction signals send a bare account string (e.g. "account-123").
 	var account string
-	if err := json.Unmarshal(payload, &account); err != nil {
-		return err
+	if err := json.Unmarshal(data, &account); err == nil {
+		if account == "" {
+			return errors.New("corrected account must be non-empty")
+		}
+		s.Account = account
+		return nil
 	}
-	if account == "" {
-		return errors.New("corrected account must be non-empty")
-	}
-	s.Account = account
-	return nil
+	return json.Unmarshal(data, s)
+}
+func (s *resumableState) Clone() ExecutionData {
+	c := *s
+	return &c
 }
 
 func transferActivity(ctx context.Context, s *resumableState) (*resumableState, error) {
@@ -66,17 +63,20 @@ func resumableActivityOptions() *workflow.ActivityOptions {
 	}
 }
 
-func TestAddResumableTransitionActivityWithOptions(t *testing.T) {
+func TestAddTransitionActivityWithSignalEvent(t *testing.T) {
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddResumableTransitionActivityWithOptions("transfer", transferActivity, nil, ResumableOptions{})
+	we.AddTransitionActivityWithOptions("transfer", DefaultCorrectionSignal, transferActivity, nil)
 
 	info := we.activity["transfer"]
 	if info == nil || info.Resumable == nil {
-		t.Fatal("expected resumable options on the activity")
+		t.Fatal("expected resumable options when signalEvent is set")
 	}
-	if info.SignalName != DefaultCorrectionSignal {
-		t.Fatalf("SignalName = %q, want %s", info.SignalName, DefaultCorrectionSignal)
+	if info.SignalEvent != DefaultCorrectionSignal {
+		t.Fatalf("SignalEvent = %q, want %s", info.SignalEvent, DefaultCorrectionSignal)
+	}
+	if info.Resumable.CorrectionSignal != DefaultCorrectionSignal {
+		t.Fatalf("CorrectionSignal = %q, want %s", info.Resumable.CorrectionSignal, DefaultCorrectionSignal)
 	}
 	if info.Resumable.MaxCorrectionAttempts != defaultMaxCorrectionAttempts {
 		t.Fatalf("MaxCorrectionAttempts = %d", info.Resumable.MaxCorrectionAttempts)
@@ -93,7 +93,7 @@ func TestResumableActivityParksThenRetriesWithCorrection(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddResumableTransitionActivityWithOptions("transfer", transferActivity, resumableActivityOptions(), ResumableOptions{})
+	we.AddTransitionActivityWithOptions("transfer", DefaultCorrectionSignal, transferActivity, resumableActivityOptions())
 
 	env.RegisterDelayedCallback(func() {
 		val, err := env.QueryWorkflow(QueryGetStatus)
@@ -130,13 +130,13 @@ func TestResumableActivityFailsAfterMaxCorrectionAttempts(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddResumableTransitionActivityWithOptions("transfer", alwaysFailActivity, resumableActivityOptions(), ResumableOptions{
-		MaxCorrectionAttempts: 2,
-	})
+	we.AddTransitionActivityWithOptions("transfer", DefaultCorrectionSignal, alwaysFailActivity, resumableActivityOptions())
+	we.activity["transfer"].Resumable.MaxCorrectionAttempts = 2
 
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(DefaultCorrectionSignal, "fix-1")
 		env.SignalWorkflow(DefaultCorrectionSignal, "fix-2")
+		env.SignalWorkflow(DefaultCorrectionSignal, "fix-3")
 	}, time.Millisecond)
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
@@ -157,9 +157,8 @@ func TestResumableActivityCorrectionTimeout(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddResumableTransitionActivityWithOptions("transfer", alwaysFailActivity, resumableActivityOptions(), ResumableOptions{
-		WaitTimeout: time.Millisecond,
-	})
+	we.AddTransitionActivityWithOptions("transfer", DefaultCorrectionSignal, alwaysFailActivity, resumableActivityOptions())
+	we.activity["transfer"].Resumable.WaitTimeout = time.Millisecond
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
 		return we.Execute(ctx, &resumableState{Account: "invalid"})
@@ -176,11 +175,11 @@ func TestResumableActivityWaitsForApproval(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddResumableTransitionActivityWithOptions("transfer", okActivity, resumableActivityOptions(), ResumableOptions{
-		ApprovalSignal: DefaultApprovalSignal,
-	})
+	we.AddTransitionActivityWithOptions("transfer", DefaultCorrectionSignal, okActivity, resumableActivityOptions())
+	we.activity["transfer"].Resumable.ApprovalSignal = DefaultApprovalSignal
 
 	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(DefaultCorrectionSignal, "account-123")
 		env.SignalWorkflow(DefaultApprovalSignal, true)
 	}, time.Millisecond)
 
@@ -202,11 +201,11 @@ func TestResumableActivityRejectedByApproval(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddResumableTransitionActivityWithOptions("transfer", okActivity, resumableActivityOptions(), ResumableOptions{
-		ApprovalSignal: DefaultApprovalSignal,
-	})
+	we.AddTransitionActivityWithOptions("transfer", DefaultCorrectionSignal, okActivity, resumableActivityOptions())
+	we.activity["transfer"].Resumable.ApprovalSignal = DefaultApprovalSignal
 
 	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(DefaultCorrectionSignal, "account-123")
 		env.SignalWorkflow(DefaultApprovalSignal, false)
 	}, time.Millisecond)
 
@@ -242,5 +241,15 @@ func TestApplyCorrectionWithoutApplier(t *testing.T) {
 	}
 	if state.Activity != "step2" {
 		t.Fatalf("Activity = %q, want step2", state.Activity)
+	}
+}
+
+func TestApplyCorrectionPartialPayload(t *testing.T) {
+	state := &resumableState{Account: "invalid"}
+	if err := applyCorrection(state, json.RawMessage(`"account-123"`)); err != nil {
+		t.Fatal(err)
+	}
+	if state.Account != "account-123" {
+		t.Fatalf("Account = %q, want account-123", state.Account)
 	}
 }

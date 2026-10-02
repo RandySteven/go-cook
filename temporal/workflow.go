@@ -16,29 +16,13 @@ type (
 )
 
 type (
-	// Navigable allows the Execute state machine to read which activity
-	// should run next. Any state struct that implements this interface
-	// enables branching in the pipeline.
-	//
-	// After an activity returns, Execute checks GetNextActivity():
-	//   - "" (empty)  → continue to the next sequential activity
-	//   - activity name → branch to that activity (must be registered via AddBranchActivity)
-	//
-	// After branching, execution stops (the branch path runs to completion,
-	// then Execute returns). The workflow function can inspect the state to
-	// decide what to do next.
-	ExecutionWorkflow interface { //Renamed to ExecutionWorkflow interface
-		SetActivity(activityName string)
-		GetActivity() string
-		JSONString() (string, error)
-	}
-
-	SignalActivity struct {
-	}
+	// ActivityFunction is any Temporal activity function. Prefer a concrete
+	// input/output type (not ExecutionData) so the SDK can serialize payloads.
+	ActivityFunction any
 
 	ActivityExecutionInfo struct {
 		ActivityName    string
-		SignalName      string
+		SignalEvent     string
 		ActivityFn      interface{}
 		ActivityOptions *workflow.ActivityOptions
 		NextActivities  []string
@@ -59,77 +43,6 @@ type (
 
 		temporalClient Temporal
 		signalConsumer *SignalConsumer
-	}
-
-	WorkflowExecution interface {
-		// Execute runs the sequential activity pipeline, threading state through each activity.
-		Execute(ctx workflow.Context, executionData interface{}) error
-
-		// AddTransitionActivityWithOptions registers an activity with the Temporal worker and adds it
-		// to the sequential execution pipeline. Activities run in the order they are added.
-		// It is used to add an activity with options to the sequential execution pipeline.
-		AddTransitionActivityWithOptions(activityName string, signalName string, activityFn interface{}, options *workflow.ActivityOptions, nextActivities ...string)
-
-		// AddResumableTransitionActivityWithOptions registers a pipeline step that parks the
-		// workflow after retries are exhausted, waits for a correction Signal, then re-executes
-		// the same activity instead of failing Execute.
-		AddResumableTransitionActivityWithOptions(activityName string, activityFn interface{}, options *workflow.ActivityOptions, resumable ResumableOptions, nextActivities ...string)
-
-		// RegisterWorkflow registers a workflow with the Temporal worker.
-		RegisterWorkflow(name string, fn interface{})
-
-		// GetWorkflowExecutionData gets the workflow execution data.
-		// It is used to get the workflow execution data from the Temporal server.
-		GetWorkflowExecutionData(wfCtx workflow.Context, runID string, result interface{}) error
-
-		// StartWorkflow starts a new workflow execution and returns the run ID.
-		// It is used to start a new workflow execution and returns the run ID.
-		StartWorkflow(ctx context.Context, opts StartWorkflowOptions, workflowFn interface{}, args ...interface{}) (client.WorkflowRun, error)
-
-		// GetWorkflowResult gets the workflow result from the Temporal server.
-		// It is used to get the workflow result from the Temporal server.
-		GetWorkflowResult(ctx context.Context, workflowID string, runID string, result interface{}) error
-
-		// StartChildWorkflow starts a new child workflow execution and returns the run ID.
-		// It is used to start a new child workflow execution and returns the run ID.
-		StartChildWorkflow(ctx workflow.Context, workflowID string, signalName string, request interface{}, result interface{}) error
-
-		//SignalWorkflow signals a workflow.
-		SignalWorkflow(ctx context.Context, workflowID string, runID string, signalName string, arg interface{}) error
-
-		//Goroutine workflow run
-		Goroutine(ctx workflow.Context, goroutineFn func(ctx workflow.Context))
-
-		//GetSignalResult gets the signal result from the Temporal server.
-		//It is used to get the signal result from the Temporal server.
-		GetSignalResult(ctx workflow.Context, signalName string, result interface{}) error
-
-		//SignalExternalWorkflow signals an external workflow.
-		//It is used to signal an external workflow.
-		SignalExternalWorkflow(ctx workflow.Context, workflowID string, runID string, signalName string, arg interface{}) error
-
-		//GetExternalWorkflowResult gets the external workflow result from the Temporal server.
-		//It is used to get the external workflow result from the Temporal server.
-		GetExternalWorkflowResult(ctx workflow.Context, workflowID string, runID string, result interface{}) error
-
-		//WaitForSignal waits for a signal and returns the result.
-		//It is used to wait for a signal and returns the result.
-		WaitForSignal(ctx workflow.Context, signalName string, result interface{}, timeout time.Duration) error
-
-		//ListenSignal listens for a signal and calls the handler function when the signal is received.
-		//It is used to listen for a signal and call the handler function when the signal is received.
-		ListenSignal(ctx workflow.Context, signalName string, result interface{}, handler func(ctx workflow.Context)) error
-
-		//WaitForAnySignal waits for any signal from the given map of signals and returns the signal name.
-		//It is used to wait for any signal from the given map of signals and returns the signal name.
-		WaitForAnySignal(ctx workflow.Context, signals map[string]interface{}) (string, error)
-
-		//SetQueryHandler
-		SetQueryHandler(ctx workflow.Context, queryName string, fn interface{}) (err error)
-
-		SetUpdateHandlerWithOptions(ctx workflow.Context, queryName string, fn interface{}, opt workflow.UpdateHandlerOptions) (err error)
-
-		UpdateWorkflow(ctx context.Context, queryName string, workflowID string, runID string, stage client.WorkflowUpdateStage, args interface{}) (client.WorkflowUpdateHandle, error)
 	}
 )
 
@@ -174,19 +87,23 @@ func (w *WorkflowExecutionData) SignalExternalWorkflow(ctx workflow.Context, wor
 // to that activity (which must be registered via AddBranchActivity). After the branch
 // chain completes, Execute returns — it does NOT resume the sequential pipeline.
 //
-// Steps registered with AddResumableTransitionActivityWithOptions park on failure
-// (AWAITING_CORRECTION) until a correction Signal arrives, then retry that same step.
-func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData interface{}) error {
-	navigable, _ := executionData.(ExecutionWorkflow)
+// Steps with a non-empty signalEvent park until that Signal arrives, then run.
+// On failure they park again on the same signalEvent, apply the payload, and retry.
+func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData ExecutionData) error {
 	currActivity := w.activity[w.firstActivity]
 
 	w.StartedAt = time.Now()
-	w.registerStatusQuery(ctx, executionData)
 	statusAttr := w.statusSearchAttribute()
-	w.setExecutionStatus(ctx, executionData, StatusPending, statusAttr)
-
+	err := w.setExecutionStatus(ctx, executionData, StatusPending, statusAttr)
+	if err != nil {
+		return err
+	}
+	err = w.registerStatusQuery(ctx)
+	if err != nil {
+		return err
+	}
 	for currActivity != nil {
-		if err := w.runActivity(ctx, currActivity, executionData, navigable); err != nil {
+		if err := w.runActivity(ctx, currActivity, executionData); err != nil {
 			if w.Status != StatusFailed && w.Status != StatusRejected {
 				w.setExecutionStatus(ctx, executionData, StatusFailed, statusAttr)
 			}
@@ -197,11 +114,11 @@ func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData inte
 			break
 		}
 
-		if navigable == nil {
+		if executionData == nil {
 			break
 		}
 
-		nextActivity := navigable.GetActivity()
+		nextActivity := executionData.GetActivity()
 		if nextActivity == "" {
 			break
 		}
@@ -241,23 +158,23 @@ func (w *WorkflowExecutionData) SignalWorkflow(ctx context.Context, workflowID s
 	return w.temporalClient.SignalWorkflow(ctx, workflowID, runID, signalName, arg)
 }
 
-// runActivity executes a single activity and handles its signal if present.
-func (w *WorkflowExecutionData) runActivity(ctx workflow.Context, info *ActivityExecutionInfo, executionData interface{}, navigable ExecutionWorkflow) error {
-	if info.Resumable != nil {
-		return w.runResumableActivity(ctx, info, executionData, navigable)
+// runActivity executes a single activity. Non-empty SignalEvent waits for that Signal first.
+func (w *WorkflowExecutionData) runActivity(ctx workflow.Context, currActivity *ActivityExecutionInfo, executionData ExecutionData) error {
+	if currActivity.SignalEvent != "" {
+		return w.runResumableActivity(ctx, currActivity, executionData)
 	}
 
 	activityCtx := ctx
-	if info.ActivityOptions != nil {
-		activityCtx = workflow.WithActivityOptions(ctx, *info.ActivityOptions)
+	if currActivity.ActivityOptions != nil {
+		activityCtx = workflow.WithActivityOptions(ctx, *currActivity.ActivityOptions)
 	}
 
-	future := workflow.ExecuteActivity(activityCtx, info.ActivityFn, executionData)
+	future := workflow.ExecuteActivity(activityCtx, currActivity.ActivityFn, executionData)
 	if err := future.Get(ctx, executionData); err != nil {
-		return fmt.Errorf("activity %s failed: %w", info.ActivityName, err)
+		return fmt.Errorf("activity %s failed: %w", currActivity.ActivityName, err)
 	}
 
-	return applyBranch(info, navigable)
+	return applyBranch(currActivity, executionData)
 }
 
 // RegisterWorkflow registers a workflow with the Temporal worker.
@@ -278,7 +195,7 @@ func (w *WorkflowExecutionData) GetWorkflowExecutionData(wfCtx workflow.Context,
 	return nil
 }
 
-func (w *WorkflowExecutionData) AddTransitionActivityWithOptions(activityName string, signalName string, activityFn interface{}, options *workflow.ActivityOptions, nextActivities ...string) {
+func (w *WorkflowExecutionData) AddTransitionActivityWithOptions(activityName string, signalEvent string, activityFn ActivityFunction, options *workflow.ActivityOptions, nextActivities ...string) {
 	w.temporalClient.RegisterActivity(ActivityDefinition{
 		Name: activityName,
 		Fn:   activityFn,
@@ -289,25 +206,24 @@ func (w *WorkflowExecutionData) AddTransitionActivityWithOptions(activityName st
 		w.firstActivity = activityName
 	}
 
-	w.activity[activityName] = &ActivityExecutionInfo{
+	info := &ActivityExecutionInfo{
 		ActivityName:    activityName,
-		SignalName:      signalName,
+		SignalEvent:     signalEvent,
 		ActivityFn:      activityFn,
 		ActivityOptions: options,
 		NextActivities:  nextActivities,
 	}
+	if signalEvent != "" {
+		resumable := ResumableOptions{CorrectionSignal: signalEvent}.withDefaults()
+		info.Resumable = &resumable
+	}
+	w.activity[activityName] = info
 
 	for _, nextActivity := range nextActivities {
 		if _, exists := w.activity[nextActivity]; !exists {
 			w.activity[nextActivity] = &ActivityExecutionInfo{}
 		}
 	}
-}
-
-func (w *WorkflowExecutionData) AddResumableTransitionActivityWithOptions(activityName string, activityFn interface{}, options *workflow.ActivityOptions, resumable ResumableOptions, nextActivities ...string) {
-	opts := resumable.withDefaults()
-	w.AddTransitionActivityWithOptions(activityName, opts.CorrectionSignal, activityFn, options, nextActivities...)
-	w.activity[activityName].Resumable = &opts
 }
 
 func (w *WorkflowExecutionData) StartChildWorkflow(ctx workflow.Context, workflowID string, signalName string, request interface{}, result interface{}) error {

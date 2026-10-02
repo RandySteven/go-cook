@@ -10,11 +10,13 @@ import (
 )
 
 const (
+	//Temporal signals
 	DefaultCorrectionSignal      = "retryWithCorrection"
 	DefaultApprovalSignal        = "approve"
 	DefaultStatusSearchAttribute = "WorkflowStatus"
 	QueryGetStatus               = "getStatus"
 
+	//Temporal statuses
 	StatusPending            = "PENDING"
 	StatusExecuting          = "EXECUTING"
 	StatusAwaitingCorrection = "AWAITING_CORRECTION"
@@ -23,6 +25,7 @@ const (
 	StatusCompleted          = "COMPLETED"
 	StatusRejected           = "REJECTED"
 
+	//Default setup for resumable activities
 	defaultMaxCorrectionAttempts = 5
 	defaultActivityRetryAttempts = 3
 	defaultStartToCloseTimeout   = 30 * time.Second
@@ -63,20 +66,6 @@ type ResumableOptions struct {
 	WaitTimeout time.Duration
 }
 
-// StatusReporter lets execution state expose the parked/running status via
-// the getStatus Query. Optional — Execute still tracks status internally.
-type StatusReporter interface {
-	SetStatus(status string)
-	GetStatus() string
-}
-
-// CorrectionApplier applies a correction Signal payload onto execution state.
-// Implement this when the Signal is a partial fix (for example a new account
-// number) rather than a full replacement of the activity input.
-type CorrectionApplier interface {
-	ApplyCorrection(payload json.RawMessage) error
-}
-
 // NewNonRetryableError marks a permanent input failure so Temporal does not
 // exhaust retries before Execute parks for a correction.
 func NewNonRetryableError(errType, message string) error {
@@ -105,24 +94,27 @@ func (w *WorkflowExecutionData) statusSearchAttribute() string {
 	return ""
 }
 
-func (w *WorkflowExecutionData) registerStatusQuery(ctx workflow.Context, executionData interface{}) {
-	_ = workflow.SetQueryHandler(ctx, QueryGetStatus, func() (string, error) {
-		if reporter, ok := executionData.(StatusReporter); ok {
-			return reporter.GetStatus(), nil
-		}
+func (w *WorkflowExecutionData) registerStatusQuery(ctx workflow.Context) error {
+	err := workflow.SetQueryHandler(ctx, QueryGetStatus, func() (string, error) {
 		return w.Status, nil
 	})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (w *WorkflowExecutionData) setExecutionStatus(ctx workflow.Context, executionData interface{}, status, searchAttr string) {
+func (w *WorkflowExecutionData) setExecutionStatus(ctx workflow.Context, executionData ExecutionData, status, searchAttr string) error {
 	w.Status = status
-	if reporter, ok := executionData.(StatusReporter); ok {
-		reporter.SetStatus(status)
-	}
 	if searchAttr == "" {
-		return
+		return nil
 	}
-	_ = workflow.UpsertSearchAttributes(ctx, map[string]interface{}{searchAttr: status})
+	err := workflow.UpsertSearchAttributes(ctx, map[string]interface{}{searchAttr: status})
+	if err != nil {
+		workflow.GetLogger(ctx).Error("failed to upsert search attributes", "error", err)
+		return err
+	}
+	return nil
 }
 
 func resumableActivityContext(ctx workflow.Context, info *ActivityExecutionInfo) workflow.Context {
@@ -141,14 +133,33 @@ func resumableActivityContext(ctx workflow.Context, info *ActivityExecutionInfo)
 	return workflow.WithActivityOptions(ctx, opts)
 }
 
-func (w *WorkflowExecutionData) runResumableActivity(ctx workflow.Context, info *ActivityExecutionInfo, executionData interface{}, navigable ExecutionWorkflow) error {
-	opts := info.Resumable.withDefaults()
+func (w *WorkflowExecutionData) runResumableActivity(ctx workflow.Context, info *ActivityExecutionInfo, executionData ExecutionData) error {
+	var opts ResumableOptions
+	if info.Resumable != nil {
+		opts = *info.Resumable
+	}
+	if opts.CorrectionSignal == "" {
+		opts.CorrectionSignal = info.SignalEvent
+	}
+	opts = opts.withDefaults()
 	info.Resumable = &opts
 	activityCtx := resumableActivityContext(ctx, info)
-	correctionCh := workflow.GetSignalChannel(ctx, opts.CorrectionSignal)
+	signalCh := workflow.GetSignalChannel(ctx, info.SignalEvent)
 
 	correctionCount := 0
 	for {
+		w.setExecutionStatus(ctx, executionData, StatusAwaitingCorrection, opts.StatusSearchAttribute)
+		payload, waitErr := waitForSignalPayload(ctx, signalCh, opts.WaitTimeout)
+		if waitErr != nil {
+			w.setExecutionStatus(ctx, executionData, StatusFailed, opts.StatusSearchAttribute)
+			return fmt.Errorf("activity %s: %w", info.ActivityName, waitErr)
+		}
+		if len(payload) > 0 && string(payload) != "null" {
+			if err := applyCorrection(executionData, payload); err != nil {
+				return fmt.Errorf("activity %s: apply correction: %w", info.ActivityName, err)
+			}
+		}
+
 		w.setExecutionStatus(ctx, executionData, StatusExecuting, opts.StatusSearchAttribute)
 
 		future := workflow.ExecuteActivity(activityCtx, info.ActivityFn, executionData)
@@ -163,20 +174,11 @@ func (w *WorkflowExecutionData) runResumableActivity(ctx workflow.Context, info 
 			return fmt.Errorf("activity %s failed after %d correction attempts: %w", info.ActivityName, opts.MaxCorrectionAttempts, err)
 		}
 
-		w.setExecutionStatus(ctx, executionData, StatusAwaitingCorrection, opts.StatusSearchAttribute)
-		workflow.GetLogger(ctx).Warn("activity failed — waiting for correction",
+		workflow.GetLogger(ctx).Warn("activity failed — waiting for signalEvent",
 			"activity", info.ActivityName,
+			"signalEvent", info.SignalEvent,
 			"error", err,
 		)
-
-		payload, waitErr := waitForSignalPayload(ctx, correctionCh, opts.WaitTimeout)
-		if waitErr != nil {
-			w.setExecutionStatus(ctx, executionData, StatusFailed, opts.StatusSearchAttribute)
-			return fmt.Errorf("activity %s: %w", info.ActivityName, waitErr)
-		}
-		if err := applyCorrection(executionData, payload); err != nil {
-			return fmt.Errorf("activity %s: apply correction: %w", info.ActivityName, err)
-		}
 	}
 
 	if opts.ApprovalSignal != "" {
@@ -185,10 +187,10 @@ func (w *WorkflowExecutionData) runResumableActivity(ctx workflow.Context, info 
 		}
 	}
 
-	return applyBranch(info, navigable)
+	return applyBranch(info, executionData)
 }
 
-func (w *WorkflowExecutionData) waitForApproval(ctx workflow.Context, executionData interface{}, activityName string, opts ResumableOptions) error {
+func (w *WorkflowExecutionData) waitForApproval(ctx workflow.Context, executionData ExecutionData, activityName string, opts ResumableOptions) error {
 	w.setExecutionStatus(ctx, executionData, StatusAwaitingApproval, opts.StatusSearchAttribute)
 	approvalCh := workflow.GetSignalChannel(ctx, opts.ApprovalSignal)
 
@@ -248,17 +250,16 @@ func encodeCorrection(payload interface{}) (json.RawMessage, error) {
 	}
 }
 
-func applyCorrection(executionData interface{}, payload json.RawMessage) error {
-	if applier, ok := executionData.(CorrectionApplier); ok {
-		return applier.ApplyCorrection(payload)
-	}
+func applyCorrection(executionData ExecutionData, payload json.RawMessage) error {
 	if executionData == nil {
 		return fmt.Errorf("execution data is nil")
 	}
-	return json.Unmarshal(payload, executionData)
+	// Delegate to ExecutionData.Unmarshal so callers can accept full state
+	// replacements or partial correction payloads (e.g. a corrected account).
+	return executionData.Unmarshal(payload)
 }
 
-func applyBranch(info *ActivityExecutionInfo, navigable ExecutionWorkflow) error {
+func applyBranch(info *ActivityExecutionInfo, navigable ExecutionData) error {
 	if navigable == nil || navigable.GetActivity() == "" {
 		return nil
 	}
