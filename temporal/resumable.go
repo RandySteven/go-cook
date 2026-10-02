@@ -9,28 +9,6 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-const (
-	//Temporal signals
-	DefaultCorrectionSignal      = "retryWithCorrection"
-	DefaultApprovalSignal        = "approve"
-	DefaultStatusSearchAttribute = "WorkflowStatus"
-	QueryGetStatus               = "getStatus"
-
-	//Temporal statuses
-	StatusPending            = "PENDING"
-	StatusExecuting          = "EXECUTING"
-	StatusAwaitingCorrection = "AWAITING_CORRECTION"
-	StatusAwaitingApproval   = "AWAITING_APPROVAL"
-	StatusFailed             = "FAILED"
-	StatusCompleted          = "COMPLETED"
-	StatusRejected           = "REJECTED"
-
-	//Default setup for resumable activities
-	defaultMaxCorrectionAttempts = 5
-	defaultActivityRetryAttempts = 3
-	defaultStartToCloseTimeout   = 30 * time.Second
-)
-
 // ResumableOptions configures the Resumable Activity pattern for a single
 // state-machine step. After Temporal exhausts the activity RetryPolicy, Execute
 // parks the workflow (no polling) until a correction Signal arrives, then
@@ -104,7 +82,7 @@ func (w *WorkflowExecutionData) registerStatusQuery(ctx workflow.Context) error 
 	return nil
 }
 
-func (w *WorkflowExecutionData) setExecutionStatus(ctx workflow.Context, executionData ExecutionData, status, searchAttr string) error {
+func (w *WorkflowExecutionData) setExecutionStatus(ctx workflow.Context, status, searchAttr string) error {
 	w.Status = status
 	if searchAttr == "" {
 		return nil
@@ -148,10 +126,10 @@ func (w *WorkflowExecutionData) runResumableActivity(ctx workflow.Context, info 
 
 	correctionCount := 0
 	for {
-		w.setExecutionStatus(ctx, executionData, StatusAwaitingCorrection, opts.StatusSearchAttribute)
+		w.setExecutionStatus(ctx, StatusAwaitingCorrection, opts.StatusSearchAttribute)
 		payload, waitErr := waitForSignalPayload(ctx, signalCh, opts.WaitTimeout)
 		if waitErr != nil {
-			w.setExecutionStatus(ctx, executionData, StatusFailed, opts.StatusSearchAttribute)
+			w.setExecutionStatus(ctx, StatusFailed, opts.StatusSearchAttribute)
 			return fmt.Errorf("activity %s: %w", info.ActivityName, waitErr)
 		}
 		if len(payload) > 0 && string(payload) != "null" {
@@ -160,7 +138,7 @@ func (w *WorkflowExecutionData) runResumableActivity(ctx workflow.Context, info 
 			}
 		}
 
-		w.setExecutionStatus(ctx, executionData, StatusExecuting, opts.StatusSearchAttribute)
+		w.setExecutionStatus(ctx, StatusExecuting, opts.StatusSearchAttribute)
 
 		future := workflow.ExecuteActivity(activityCtx, info.ActivityFn, executionData)
 		err := future.Get(ctx, executionData)
@@ -170,7 +148,7 @@ func (w *WorkflowExecutionData) runResumableActivity(ctx workflow.Context, info 
 
 		correctionCount++
 		if correctionCount > opts.MaxCorrectionAttempts {
-			w.setExecutionStatus(ctx, executionData, StatusFailed, opts.StatusSearchAttribute)
+			w.setExecutionStatus(ctx, StatusFailed, opts.StatusSearchAttribute)
 			return fmt.Errorf("activity %s failed after %d correction attempts: %w", info.ActivityName, opts.MaxCorrectionAttempts, err)
 		}
 
@@ -182,7 +160,7 @@ func (w *WorkflowExecutionData) runResumableActivity(ctx workflow.Context, info 
 	}
 
 	if opts.ApprovalSignal != "" {
-		if err := w.waitForApproval(ctx, executionData, info.ActivityName, opts); err != nil {
+		if err := w.waitForApproval(ctx, info.ActivityName, opts); err != nil {
 			return err
 		}
 	}
@@ -190,8 +168,8 @@ func (w *WorkflowExecutionData) runResumableActivity(ctx workflow.Context, info 
 	return applyBranch(info, executionData)
 }
 
-func (w *WorkflowExecutionData) waitForApproval(ctx workflow.Context, executionData ExecutionData, activityName string, opts ResumableOptions) error {
-	w.setExecutionStatus(ctx, executionData, StatusAwaitingApproval, opts.StatusSearchAttribute)
+func (w *WorkflowExecutionData) waitForApproval(ctx workflow.Context, activityName string, opts ResumableOptions) error {
+	w.setExecutionStatus(ctx, StatusAwaitingApproval, opts.StatusSearchAttribute)
 	approvalCh := workflow.GetSignalChannel(ctx, opts.ApprovalSignal)
 
 	var approved bool
@@ -203,7 +181,7 @@ func (w *WorkflowExecutionData) waitForApproval(ctx workflow.Context, executionD
 			return err
 		}
 		if !ok {
-			w.setExecutionStatus(ctx, executionData, StatusFailed, opts.StatusSearchAttribute)
+			w.setExecutionStatus(ctx, StatusFailed, opts.StatusSearchAttribute)
 			return fmt.Errorf("activity %s: approval signal %q timed out", activityName, opts.ApprovalSignal)
 		}
 	} else if err := workflow.Await(ctx, func() bool {
@@ -213,7 +191,7 @@ func (w *WorkflowExecutionData) waitForApproval(ctx workflow.Context, executionD
 	}
 
 	if !approved {
-		w.setExecutionStatus(ctx, executionData, StatusRejected, opts.StatusSearchAttribute)
+		w.setExecutionStatus(ctx, StatusRejected, opts.StatusSearchAttribute)
 		return fmt.Errorf("activity %s rejected by approval signal", activityName)
 	}
 	return nil

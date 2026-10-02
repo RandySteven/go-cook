@@ -105,5 +105,43 @@ type (
 		// UpdateWorkflow sends a Workflow Update to a running workflow and returns
 		// a handle for the update lifecycle.
 		UpdateWorkflow(ctx context.Context, queryName string, workflowID string, runID string, stage client.WorkflowUpdateStage, args interface{}) (client.WorkflowUpdateHandle, error)
+
+		// GetWorkflowStatus returns the status of a running workflow.
+		// The status is one of the following:
+		GetWorkflowStatus(ctx context.Context, workflowID string, runID string) (string, error)
+	}
+
+	Temporal interface {
+		// RegisterWorkflow registers a workflow definition with the engine.
+		RegisterWorkflow(definition WorkflowDefinition)
+
+		// RegisterActivity registers an activity definition with the engine.
+		RegisterActivity(definition ActivityDefinition)
+
+		// GetWorkflow returns a workflow execution.
+		GetWorkflowInfo(workflowCtx workflow.Context) (*workflow.Info, error)
+
+		// StartWorkflow starts a new workflow execution and returns the run ID.
+		StartWorkflow(ctx context.Context, opts StartWorkflowOptions, workflowFn interface{}, args ...interface{}) (client.WorkflowRun, error)
+
+		// SignalWorkflow sends a signal to a running workflow.
+		SignalWorkflow(ctx context.Context, workflowID string, runID string, signalName string, arg interface{}) error
+
+		// QueryWorkflow queries a running workflow for its current state.
+		QueryWorkflow(ctx context.Context, workflowID string, runID string, queryType string, args ...interface{}) (interface{}, error)
+
+		// CancelWorkflow requests cancellation of a running workflow.
+		CancelWorkflow(ctx context.Context, workflowID string) error
+
+		// GetWorkflowResult blocks until the workflow completes and returns the result.
+		GetWorkflowResult(ctx context.Context, workflowID string, runID string, result interface{}) error
+
+		UpdateWorkflow(ctx context.Context, queryName, workflowID, runID string, stage client.WorkflowUpdateStage, args interface{}) (client.WorkflowUpdateHandle, error)
+
+		// Start starts the internal worker that polls for tasks.
+		Start() error
+
+		// Stop gracefully shuts down the worker.
+		Stop()
 	}
 )

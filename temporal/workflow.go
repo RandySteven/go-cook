@@ -94,7 +94,7 @@ func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData Exec
 
 	w.StartedAt = time.Now()
 	statusAttr := w.statusSearchAttribute()
-	err := w.setExecutionStatus(ctx, executionData, StatusPending, statusAttr)
+	err := w.setExecutionStatus(ctx, StatusPending, statusAttr)
 	if err != nil {
 		return err
 	}
@@ -105,7 +105,7 @@ func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData Exec
 	for currActivity != nil {
 		if err := w.runActivity(ctx, currActivity, executionData); err != nil {
 			if w.Status != StatusFailed && w.Status != StatusRejected {
-				w.setExecutionStatus(ctx, executionData, StatusFailed, statusAttr)
+				w.setExecutionStatus(ctx, StatusFailed, statusAttr)
 			}
 			return err
 		}
@@ -128,7 +128,7 @@ func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData Exec
 
 	w.CompletedAt = time.Now()
 	if w.Status != StatusFailed && w.Status != StatusRejected {
-		w.setExecutionStatus(ctx, executionData, StatusCompleted, statusAttr)
+		w.setExecutionStatus(ctx, StatusCompleted, statusAttr)
 	}
 
 	return nil
@@ -308,6 +308,18 @@ func (w *WorkflowExecutionData) WaitForAnySignal(ctx workflow.Context, signals m
 	}
 	selector.Select(ctx)
 	return received, nil
+}
+
+func (w *WorkflowExecutionData) GetWorkflowStatus(ctx context.Context, workflowID string, runID string) (string, error) {
+	raw, err := w.temporalClient.QueryWorkflow(ctx, workflowID, runID, QueryGetStatus)
+	if err != nil {
+		return "", err
+	}
+	status, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("unexpected status query type %T", raw)
+	}
+	return status, nil
 }
 
 // NewWorkflowExecution creates a new WorkflowExecution.
