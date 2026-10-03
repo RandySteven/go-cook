@@ -109,6 +109,14 @@ type (
 		// GetWorkflowStatus returns the status of a running workflow.
 		// The status is one of the following:
 		GetWorkflowStatus(ctx context.Context, workflowID string, runID string) (string, error)
+
+		GetWorkflowID() string
+
+		SetWorkflowID(workflowID string)
+
+		SetExecutionData(executionData ExecutionData)
+
+		GetExecutionData() ExecutionData
 	}
 
 	Temporal interface {

@@ -30,10 +30,12 @@ type (
 	}
 
 	WorkflowExecutionData struct {
-		ID         uint64
-		WorkflowID string
-		RunID      string
-		Status     string
+		ID            uint64
+		WorkflowID    string
+		RunID         string
+		Status        string
+		ExecutionData ExecutionData
+		QueryType     string
 
 		activity      map[string]*ActivityExecutionInfo
 		firstActivity string
@@ -45,6 +47,26 @@ type (
 		signalConsumer *SignalConsumer
 	}
 )
+
+// GetWorkflowID implements [WorkflowExecution].
+func (w *WorkflowExecutionData) GetWorkflowID() string {
+	return w.WorkflowID
+}
+
+// SetWorkflowID implements [WorkflowExecution].
+func (w *WorkflowExecutionData) SetWorkflowID(workflowID string) {
+	w.WorkflowID = workflowID
+}
+
+// GetExecutionData implements [WorkflowExecution].
+func (w *WorkflowExecutionData) GetExecutionData() ExecutionData {
+	return w.ExecutionData
+}
+
+// SetExecutionData implements [WorkflowExecution].
+func (w *WorkflowExecutionData) SetExecutionData(executionData ExecutionData) {
+	w.ExecutionData = executionData
+}
 
 // UpdateWorkflow implements [WorkflowExecution].
 func (w *WorkflowExecutionData) UpdateWorkflow(ctx context.Context, queryName string, workflowID string, runID string, stage client.WorkflowUpdateStage, args interface{}) (client.WorkflowUpdateHandle, error) {
