@@ -26,7 +26,12 @@ func ExecuteWorkflow(ctx workflow.Context, wf WorkflowExecution, executionData E
 
 // WorkflowInit stores execution state, records the workflow ID, and registers a
 // query that returns the current execution data.
-func WorkflowInit(ctx workflow.Context, wf WorkflowExecution, queryType string, executionData ExecutionData) (ExecutionData, error) {
+func WorkflowInit(
+	ctx workflow.Context, 
+	wf WorkflowExecution, 
+	queryType string, 
+	executionData ExecutionData,
+	ready func(ExecutionData) error) (ExecutionData, error) {
 	if wf == nil {
 		return nil, errors.New("workflow execution is nil")
 	}
@@ -44,7 +49,13 @@ func WorkflowInit(ctx workflow.Context, wf WorkflowExecution, queryType string, 
 	}
 
 	if err := workflow.SetQueryHandler(ctx, queryType, func() (ExecutionData, error) {
-		return wf.GetExecutionData(), nil
+		data := wf.GetExecutionData()
+		if ready != nil {
+			if err := ready(data); err != nil {
+				return nil, err
+			}	
+		}
+		return data, nil
 	}); err != nil {
 		return nil, err
 	}

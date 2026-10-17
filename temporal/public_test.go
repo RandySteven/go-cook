@@ -85,7 +85,12 @@ func TestWorkflowInitRegistersQueryAndWorkflowID(t *testing.T) {
 	}, time.Millisecond)
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
-		got, err := WorkflowInit(ctx, we, "state", state)
+		got, err := WorkflowInit(ctx, we, "state", state, func(data ExecutionData) error {
+			if data.GetActivity() != "step1" {
+				return errors.New("state is not ready")
+			}
+			return nil
+		})
 		if err != nil {
 			return err
 		}
@@ -125,7 +130,7 @@ func TestWorkflowInitKeepsExistingWorkflowID(t *testing.T) {
 	we.SetWorkflowID("order-1")
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
-		_, err := WorkflowInit(ctx, we, "state", &executionWorkflow{})
+		_, err := WorkflowInit(ctx, we, "state", &executionWorkflow{}, nil)
 		return err
 	})
 	if err := env.GetWorkflowError(); err != nil {
@@ -136,16 +141,52 @@ func TestWorkflowInitKeepsExistingWorkflowID(t *testing.T) {
 	}
 }
 
+func TestWorkflowInitQueryReadyCanReject(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+
+	mt := &mockTemporal{}
+	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
+	state := &executionWorkflow{Activity: "step1"}
+
+	var queryErr error
+	env.RegisterDelayedCallback(func() {
+		_, queryErr = env.QueryWorkflow("state")
+		env.SignalWorkflow("done", true)
+	}, time.Millisecond)
+
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		_, err := WorkflowInit(ctx, we, "state", state, func(data ExecutionData) error {
+			if data.GetActivity() != "ready" {
+				return errors.New("not ready")
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		var done bool
+		workflow.GetSignalChannel(ctx, "done").Receive(ctx, &done)
+		return nil
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if queryErr == nil {
+		t.Fatal("expected ready callback to reject the query")
+	}
+}
+
 func TestWorkflowInitRejectsInvalidInput(t *testing.T) {
-	if _, err := WorkflowInit(nil, nil, "state", &executionWorkflow{}); err == nil {
+	if _, err := WorkflowInit(nil, nil, "state", &executionWorkflow{}, nil); err == nil {
 		t.Fatal("expected nil workflow error")
 	}
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt)
-	if _, err := WorkflowInit(nil, we, "", &executionWorkflow{}); err == nil {
+	if _, err := WorkflowInit(nil, we, "", &executionWorkflow{}, nil); err == nil {
 		t.Fatal("expected empty query type error")
 	}
-	if _, err := WorkflowInit(nil, we, "state", nil); err == nil {
+	if _, err := WorkflowInit(nil, we, "state", nil, nil); err == nil {
 		t.Fatal("expected nil execution data error")
 	}
 }
