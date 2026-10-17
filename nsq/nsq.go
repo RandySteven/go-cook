@@ -26,14 +26,6 @@ type (
 		MaxBackoffDuration int
 	}
 
-	// Nsq defines the interface for NSQ operations including publishing and consuming messages.
-	Nsq interface {
-		// Publish sends a message to the specified topic.
-		Publish(ctx context.Context, topic string, body []byte) error
-		// RegisterConsumer registers a handler function for a topic.
-		RegisterConsumer(topic string, channel string, handlerFunc func(context.Context, string)) error
-	}
-
 	// nsqClient is the internal implementation of the Nsq interface.
 	nsqClient struct {
 		pub                *nsq.Producer
@@ -41,11 +33,6 @@ type (
 		nsqConfig          *nsq.Config
 		lookupd            string
 		concurrentConsumer int
-	}
-
-	// Publish defines the publish-only subset of NSQ operations.
-	Publish interface {
-		Publish(ctx context.Context, topic string, body []byte) error
 	}
 )
 
