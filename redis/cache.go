@@ -101,6 +101,10 @@ func (r *redisClient) GeoRadiusByMember(ctx context.Context, key string, member 
 
 // Publish implements [Redis].
 func (r *redisClient) Publish(ctx context.Context, channel string, message interface{}) (bool, error) {
-	panic("unimplemented")
+	err := r.client.Publish(ctx, channel, message).Err()
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 

@@ -17,11 +17,12 @@ type mockTemporal struct {
 	workflows  []WorkflowDefinition
 	activities []ActivityDefinition
 
-	startRun client.WorkflowRun
-	startErr error
+	startRun  client.WorkflowRun
+	startErr  error
 	signalErr error
 	queryVal  interface{}
 	queryErr  error
+	queryFn   func(ctx context.Context, workflowID string, runID string, queryType string) (interface{}, error)
 	cancelErr error
 	getErr    error
 	startWErr error
@@ -48,6 +49,9 @@ func (m *mockTemporal) SignalWorkflow(ctx context.Context, workflowID string, ru
 }
 
 func (m *mockTemporal) QueryWorkflow(ctx context.Context, workflowID string, runID string, queryType string, args ...interface{}) (interface{}, error) {
+	if m.queryFn != nil {
+		return m.queryFn(ctx, workflowID, runID, queryType)
+	}
 	return m.queryVal, m.queryErr
 }
 
