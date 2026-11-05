@@ -8,8 +8,7 @@ import (
 )
 
 type (
-	// Redis defines the interface for Redis operations including health checks,
-	// client access, and cache management.
+	// Redis defines cache, pub/sub, and geo operations shared by Redis and Valkey.
 	Redis interface {
 		// Ping checks if the Redis connection is alive.
 		Ping() error

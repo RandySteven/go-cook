@@ -2,11 +2,13 @@ package redis_client
 
 import (
 	"context"
+	"crypto/tls"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 func testRedis(t *testing.T) (*redisClient, *miniredis.Miniredis) {
@@ -159,7 +161,14 @@ func TestRedisUnimplementedPanics(t *testing.T) {
 
 	assertPanic(t, func() { _, _ = c.HDel(ctx, "k") })
 	assertPanic(t, func() { _, _ = c.HGet(ctx, "k") })
-	assertPanic(t, func() { _, _ = c.Publish(ctx, "ch", "msg") })
+}
+
+func TestRedisPublish(t *testing.T) {
+	c, _ := testRedis(t)
+	ok, err := c.Publish(context.Background(), "orders", "paid")
+	if err != nil || !ok {
+		t.Fatalf("Publish: ok=%v err=%v", ok, err)
+	}
 }
 
 func TestRateLimiter(t *testing.T) {
@@ -182,6 +191,127 @@ func TestRateLimiter(t *testing.T) {
 		}
 	}()
 	_ = RateLimiter(context.Background())
+}
+
+func TestValkeyAndRedisShareCommands(t *testing.T) {
+	mr := miniredis.RunT(t)
+	cfg := &RedisConfig{
+		Host:            mr.Host(),
+		Port:            mr.Port(),
+		PoolSize:        2,
+		DialTimeout:     2,
+		ReadTimeout:     500,
+		WriteTimeout:    500,
+		MaxRetries:      1,
+		MinRetryBackoff: 8,
+		MaxRetryBackoff: 20,
+	}
+
+	valkey, err := NewValkeyClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redisClient, err := NewRedisClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	if err := valkey.Ping(); err != nil {
+		t.Fatalf("valkey ping: %v", err)
+	}
+	if _, err := valkey.Set(ctx, "shared", map[string]string{"engine": "valkey"}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	val, err := redisClient.Get(ctx, "shared")
+	if err != nil {
+		t.Fatalf("redis read of valkey write: %v", err)
+	}
+	m, ok := val.(map[string]interface{})
+	if !ok || m["engine"] != "valkey" {
+		t.Fatalf("shared value = %#v", val)
+	}
+
+	opt := valkey.Client().Options()
+	if opt.TLSConfig != nil {
+		t.Fatal("default connection should be plaintext")
+	}
+	if opt.Protocol != 3 {
+		t.Fatalf("default protocol = %d, want 3", opt.Protocol)
+	}
+	if opt.MaintNotificationsConfig == nil || opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
+		t.Fatalf("maint notifications = %#v", opt.MaintNotificationsConfig)
+	}
+}
+
+func TestClientsStayOnTheirServer(t *testing.T) {
+	a, _ := testRedis(t)
+	b, _ := testRedis(t)
+	ctx := context.Background()
+
+	if _, err := a.Set(ctx, "only-a", "a", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Get(ctx, "only-a"); err == nil {
+		t.Fatal("second client read the first client's key")
+	}
+}
+
+func TestProtocol2AndOptionOverrides(t *testing.T) {
+	mr := miniredis.RunT(t)
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	c, err := NewRedisClient(&RedisConfig{
+		Host:               mr.Host(),
+		Port:               mr.Port(),
+		Protocol:           2,
+		DB:                 0,
+		DisableIdentity:    true,
+		MaintNotifications: true,
+		TLSConfig:          tlsCfg,
+		DialTimeout:        1,
+		ReadTimeout:        200,
+		WriteTimeout:       200,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt := c.Client().Options()
+	if opt.Protocol != 2 {
+		t.Fatalf("protocol = %d", opt.Protocol)
+	}
+	if opt.TLSConfig != tlsCfg {
+		t.Fatal("TLSConfig was not applied")
+	}
+	if !opt.DisableIdentity {
+		t.Fatal("DisableIdentity was not applied")
+	}
+	if opt.MaintNotificationsConfig == nil || opt.MaintNotificationsConfig.Mode != maintnotifications.ModeAuto {
+		t.Fatalf("maint mode = %#v", opt.MaintNotificationsConfig)
+	}
+
+	plain, err := NewValkeyClient(&RedisConfig{
+		Host:         mr.Host(),
+		Port:         mr.Port(),
+		Protocol:     2,
+		DialTimeout:  2,
+		ReadTimeout:  500,
+		WriteTimeout: 500,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.Ping(); err != nil {
+		t.Fatalf("RESP2 ping: %v", err)
+	}
+}
+
+func TestInvalidClientConfig(t *testing.T) {
+	if _, err := NewRedisClient(nil); err == nil {
+		t.Fatal("expected nil config error")
+	}
+	if _, err := NewValkeyClient(&RedisConfig{Protocol: 1}); err == nil {
+		t.Fatal("expected protocol error")
+	}
 }
 
 func assertPanic(t *testing.T, fn func()) {

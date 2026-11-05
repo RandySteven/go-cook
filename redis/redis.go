@@ -1,10 +1,12 @@
-// Package redis_client provides a Redis client wrapper with caching, rate limiting,
-// and connection management capabilities. It supports JSON serialization for
-// storing and retrieving typed data.
+// Package redis_client provides a Redis and Valkey client wrapper with caching,
+// rate limiting, and connection management. Valkey speaks the same RESP
+// protocol as Redis, so both servers use this client. JSON serialization is
+// used for stored values.
 package redis_client
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/go-redis/redis_rate/v10"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 var (
@@ -25,9 +28,33 @@ var (
 
 type (
 	RedisConfig struct {
+		Username string
 		Host     string
 		Port     string
 		Password string
+
+		// DB selects the logical database. Zero uses database 0, matching
+		// earlier releases.
+		DB int
+
+		// Protocol is the RESP version to negotiate: 2 or 3.
+		// Zero keeps the default of 3. Redis 6+ and Valkey accept HELLO;
+		// a server that rejects HELLO stays on RESP2, so Redis 5 still works.
+		Protocol int
+
+		// TLSConfig enables TLS when set. Nil keeps a plaintext connection,
+		// which is the default for Redis and Valkey.
+		TLSConfig *tls.Config
+
+		// DisableIdentity skips CLIENT SETINFO on connect. Redis before 7.2
+		// does not implement that command. Valkey 7.2+ and Redis 7.2+ do.
+		// Leave false unless a proxy treats the unsupported command as fatal.
+		DisableIdentity bool
+
+		// MaintNotifications turns on Redis Cloud maintenance push notifications.
+		// Valkey and Redis OSS do not implement CLIENT MAINT_NOTIFICATIONS, so
+		// the default leaves that handshake off.
+		MaintNotifications bool
 
 		PoolSize    int
 		MinIdleConn int
@@ -53,46 +80,81 @@ type (
 	}
 )
 
-// NewRedisClient creates a new Redis client with rate limiting support.
-// It connects to Redis using the host and port from the provided configuration.
-// Returns an error if the connection cannot be established.
+// NewRedisClient creates a client for Redis. The same options work for Valkey;
+// NewValkeyClient is the named constructor for that server.
 func NewRedisClient(redisCfg *RedisConfig) (*redisClient, error) {
-	addr := fmt.Sprintf("%s:%s", redisCfg.Host, redisCfg.Port)
-	log.Println("connecting to redis : ", addr)
+	return newClient(redisCfg)
+}
 
-	client = redis.NewClient(&redis.Options{
-		Addr:     addr,
-		Password: redisCfg.Password,
-		DB:       0,
+// NewValkeyClient creates a client for Valkey. Cache, rate-limit, and geo calls
+// match NewRedisClient. Existing RedisConfig values keep their meaning: plaintext
+// unless TLSConfig is set, RESP3 unless Protocol is 2, and no Redis Cloud
+// maintenance handshake unless MaintNotifications is set.
+func NewValkeyClient(cfg *RedisConfig) (*redisClient, error) {
+	return newClient(cfg)
+}
 
-		Protocol: 3, // Use RESP3 protocol for faster, more optimized data serialization
+func newClient(cfg *RedisConfig) (*redisClient, error) {
+	if cfg == nil {
+		return nil, errors.New("redis config is nil")
+	}
+	opt, err := cfg.clientOptions()
+	if err != nil {
+		return nil, err
+	}
+	log.Println("connecting to redis : ", opt.Addr)
 
-		// --- Connection Pool Optimization ---
-		PoolSize:     redisCfg.PoolSize,                                 // Match to (Goroutine count / 10) up to a max of 200-300
-		MinIdleConns: redisCfg.MinIdleConn,                              // Keeps connections warm; avoids cold-start connection spikes
-		MaxIdleConns: redisCfg.MaxIdleConn,                              // Prevents closing too many connections under fluctuating load
-		PoolTimeout:  time.Duration(redisCfg.PoolTimeout) * time.Second, // Max time to wait for a connection from the pool
-
-		// --- Timeouts & Deadlines ---
-		DialTimeout:  time.Duration(redisCfg.DialTimeout) * time.Second,       // Timeout for establishing new connections
-		ReadTimeout:  time.Duration(redisCfg.ReadTimeout) * time.Millisecond,  // Strict read timeout (adjust per command payload)
-		WriteTimeout: time.Duration(redisCfg.WriteTimeout) * time.Millisecond, // Strict write timeout
-
-		// --- Resiliency & Keep-Alive ---
-		MaxRetries:      redisCfg.MaxRetries,                                        // Retries for failed idempotent commands
-		MinRetryBackoff: time.Duration(redisCfg.MinRetryBackoff) * time.Millisecond, // Initial retry delay
-		MaxRetryBackoff: time.Duration(redisCfg.MaxRetryBackoff) * time.Millisecond, // Maximum retry delay capping
-		ConnMaxIdleTime: time.Duration(redisCfg.ConnMaxIdleTime) * time.Minute,      // Reap connections idle longer than this
-		ConnMaxLifetime: time.Duration(redisCfg.ConnMaxLifeTime) * time.Minute,      // Periodically cycle connections to clear leaks
-
-		// --- Security & Production Additions ---
-		// TLSConfig: &tls.Config{InsecureSkipVerify: false}, // Uncomment for production clusters
-	})
-
+	client = redis.NewClient(opt)
 	limiter = redis_rate.NewLimiter(client)
 	return &redisClient{
 		client:  client,
 		limiter: limiter,
+	}, nil
+}
+
+func (cfg *RedisConfig) clientOptions() (*redis.Options, error) {
+	switch cfg.Protocol {
+	case 0, 2, 3:
+	default:
+		return nil, fmt.Errorf("redis protocol must be 2 or 3, got %d", cfg.Protocol)
+	}
+
+	protocol := cfg.Protocol
+	if protocol == 0 {
+		protocol = 3
+	}
+
+	maint := &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
+	if cfg.MaintNotifications {
+		maint = &maintnotifications.Config{Mode: maintnotifications.ModeAuto}
+	}
+
+	return &redis.Options{
+		Addr:     fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
+		Password: cfg.Password,
+		DB:       cfg.DB,
+		Username: cfg.Username,
+
+		Protocol: protocol,
+
+		PoolSize:     cfg.PoolSize,
+		MinIdleConns: cfg.MinIdleConn,
+		MaxIdleConns: cfg.MaxIdleConn,
+		PoolTimeout:  time.Duration(cfg.PoolTimeout) * time.Second,
+
+		DialTimeout:  time.Duration(cfg.DialTimeout) * time.Second,
+		ReadTimeout:  time.Duration(cfg.ReadTimeout) * time.Millisecond,
+		WriteTimeout: time.Duration(cfg.WriteTimeout) * time.Millisecond,
+
+		MaxRetries:      cfg.MaxRetries,
+		MinRetryBackoff: time.Duration(cfg.MinRetryBackoff) * time.Millisecond,
+		MaxRetryBackoff: time.Duration(cfg.MaxRetryBackoff) * time.Millisecond,
+		ConnMaxIdleTime: time.Duration(cfg.ConnMaxIdleTime) * time.Minute,
+		ConnMaxLifetime: time.Duration(cfg.ConnMaxLifeTime) * time.Minute,
+
+		TLSConfig:                cfg.TLSConfig,
+		DisableIdentity:          cfg.DisableIdentity,
+		MaintNotificationsConfig: maint,
 	}, nil
 }
 
@@ -111,18 +173,27 @@ func (c *redisClient) ClearCache(ctx context.Context) error {
 	return c.client.FlushDB(ctx).Err()
 }
 
-// RateLimiter enforces rate limiting based on client IP address.
-// It uses a sliding window algorithm with requests allowed per minute.
-// The rate limit is configured via the RATE_LIMITER environment variable.
-// Returns an error if the rate limit is exceeded or if the limiter fails.
+// RateLimiter enforces rate limiting for the most recently created client.
+// Prefer (*redisClient).RateLimiter when a process talks to more than one
+// Redis or Valkey server. The limit is RATE_LIMITER requests per minute,
+// keyed by the X-Client-IP context value.
 func RateLimiter(ctx context.Context) error {
+	return allow(ctx, limiter)
+}
+
+// RateLimiter enforces the same per-IP limit against this client.
+func (c *redisClient) RateLimiter(ctx context.Context) error {
+	return allow(ctx, c.limiter)
+}
+
+func allow(ctx context.Context, lim *redis_rate.Limiter) error {
 	rateLimiterInt, _ := strconv.Atoi(rateLimiter)
-	clientIP := ctx.Value(`X-Client-IP`).(string)
-	res, err := limiter.Allow(ctx, clientIP, redis_rate.PerMinute(rateLimiterInt))
+	clientIP := ctx.Value("X-Client-IP").(string)
+	res, err := lim.Allow(ctx, clientIP, redis_rate.PerMinute(rateLimiterInt))
 	if err != nil {
 		return err
 	}
-	if res.Remaining == 0 {
+	if res.Allowed == 0 {
 		return errors.New("Rate limit exceeded")
 	}
 	return nil

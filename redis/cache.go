@@ -45,7 +45,7 @@ func (r *redisClient) Set(ctx context.Context, key string, value interface{}, ti
 //
 //	user, err := Get[User](ctx, client, "user:1")
 func (r *redisClient) Get(ctx context.Context, key string) (value interface{}, err error) {
-	val, err := client.Get(ctx, key).Bytes()
+	val, err := r.client.Get(ctx, key).Bytes()
 	if err != nil {
 		return nil, err
 	}
@@ -74,11 +74,7 @@ func (r *redisClient) HGet(ctx context.Context, key string) (interface{}, error)
 
 // SetNX implements [Redis].
 func (r *redisClient) SetNX(ctx context.Context, key string, value interface{}, timeExpire time.Duration) (bool, error) {
-	err := r.client.SetNX(ctx, key, value, timeExpire).Err()
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return r.client.SetNX(ctx, key, value, timeExpire).Result()
 }
 
 // GeoAdd implements [Redis].
@@ -107,4 +103,3 @@ func (r *redisClient) Publish(ctx context.Context, channel string, message inter
 	}
 	return true, nil
 }
-
