@@ -75,7 +75,7 @@ func NewNsqClient(cfg *NSQConfig) (*nsqClient, error) {
 // a 30-second timeout context. Failed messages are automatically requeued.
 // The handler function receives the context (with the message body as a value)
 // and the topic name.
-func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc func(context.Context, string)) error {
+func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc func(context.Context, *nsq.Message) error) error {
 	log.Println("Creating NSQ consumer for topic:", topic)
 
 	consumer, err := nsq.NewConsumer(topic, channel, n.nsqConfig)
@@ -84,21 +84,10 @@ func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc f
 	}
 
 	consumer.AddConcurrentHandlers(nsq.HandlerFunc(func(msg *nsq.Message) error {
-		body := string(msg.Body)
-		ctx := context.WithValue(context.Background(), topic, body)
-		ctx, cancel := context.WithTimeout(ctx, time.Second*30)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 		defer cancel()
 
-		if err := func() error {
-			handlerFunc(ctx, body)
-			return nil
-		}(); err != nil {
-			log.Println("Error in handlerFunc:", err)
-			msg.Requeue(-1)
-			return err
-		}
-
-		return nil
+		return handlerFunc(ctx, msg)
 	}), n.concurrentConsumer)
 
 	nsqdAddr := fmt.Sprintf("%s:%s", n.config.NSQDHost, n.config.NSQDTCPPort)

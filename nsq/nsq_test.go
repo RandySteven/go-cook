@@ -30,7 +30,7 @@ func TestRegisterConsumerInvalidTopic(t *testing.T) {
 			NSQDTCPPort: "4150",
 		},
 	}
-	err := client.RegisterConsumer("", "channel", func(context.Context, string) {})
+	err := client.RegisterConsumer("", "channel", func(context.Context, *nsq.Message) error { return nil })
 	if err == nil {
 		t.Fatal("expected error for empty topic")
 	}
@@ -46,7 +46,7 @@ func TestRegisterConsumerConnectFailure(t *testing.T) {
 			NSQDTCPPort: "1",
 		},
 	}
-	err := client.RegisterConsumer("orders", "workers", func(context.Context, string) {})
+	err := client.RegisterConsumer("orders", "workers", func(context.Context, *nsq.Message) error { return nil })
 	if err == nil {
 		t.Fatal("expected connect error")
 	}
