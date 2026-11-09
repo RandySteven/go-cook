@@ -84,10 +84,7 @@ func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc f
 	}
 
 	consumer.AddConcurrentHandlers(nsq.HandlerFunc(func(msg *nsq.Message) error {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-		defer cancel()
-
-		return handlerFunc(ctx, msg)
+		return handleMessage(handlerFunc, msg)
 	}), n.concurrentConsumer)
 
 	nsqdAddr := fmt.Sprintf("%s:%s", n.config.NSQDHost, n.config.NSQDTCPPort)
@@ -97,4 +94,12 @@ func (n *nsqClient) RegisterConsumer(topic string, channel string, handlerFunc f
 
 	log.Println("NSQ consumer registered and running... for topic ", topic)
 	return nil
+}
+
+// handleMessage gives the caller a deadline and returns the handler error unchanged.
+// A non-nil error tells NSQ to requeue the message.
+func handleMessage(handlerFunc func(context.Context, *nsq.Message) error, msg *nsq.Message) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return handlerFunc(ctx, msg)
 }
