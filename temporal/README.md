@@ -58,12 +58,12 @@ exec := temporal_client.NewWorkflowExecution(tc)
 exec.RegisterWorkflow("OrderWorkflow", OrderWorkflow)
 exec.AddTransitionActivityWithOptions(
     "validate", "", ValidateActivity,
-    &workflow.ActivityOptions{StartToCloseTimeout: 30 * time.Second},
+    &temporal_client.ActivityOptions{StartToCloseTimeout: 30 * time.Second},
     "charge",
 )
 exec.AddTransitionActivityWithOptions(
     "charge", "", ChargeActivity,
-    &workflow.ActivityOptions{StartToCloseTimeout: 30 * time.Second},
+    &temporal_client.ActivityOptions{StartToCloseTimeout: 30 * time.Second},
 )
 
 if err := tc.Start(); err != nil {
@@ -95,7 +95,7 @@ These are the execution patterns you compose in a workflow function. They are no
 
 Register steps with `AddTransitionActivityWithOptions`. Inside the workflow, call `Execute`. Each activity receives the same `executionData` pointer; the result of `future.Get` is written back into that pointer.
 
-The first registered activity is the start node. After a step succeeds, `Execute` reads `GetActivity()` on `executionData` (if it implements `ExecutionWorkflow`) and jumps to a name listed in `nextActivities`. Empty `GetActivity()` or `nextActivities == nil` stops the pipeline.
+The first registered activity is the start node. After a step succeeds, `Execute` reads `GetActivity()` on `executionData` and jumps to a name listed in `nextActivities`. Empty `GetActivity()` or `nextActivities == nil` stops the pipeline. A name that is not in that step's `nextActivities`, or that was never registered, fails the workflow. Empty next names are ignored.
 
 ```go
 func OrderWorkflow(ctx workflow.Context, state *OrderState) error {
@@ -130,26 +130,44 @@ exec.AddTransitionActivityWithOptions("review", "", ReviewActivity, opts)
 exec.AddTransitionActivityWithOptions("fulfill", "", FulfillActivity, opts)
 ```
 
-`Execute` only follows a name that appears in that step’s `nextActivities`. After the branch runs, it does not return to a skipped sequential path.
+`Execute` only follows a name that appears in that step’s `nextActivities`. Any other name fails the workflow. After the branch runs, it does not return to a skipped sequential path.
 
 ### 3. Fail-fast activity
 
 Default `AddTransitionActivityWithOptions` steps. If the activity fails after Temporal retries, `Execute` returns the error and sets status `FAILED`.
 
-### 4. Signal-gated activity (pause until `signalEvent`)
+### 4. Signal-gated activity
 
-Pass a non-empty `signalEvent` to `AddTransitionActivityWithOptions`. `Execute` parks (`AWAITING_CORRECTION`) until that Signal arrives, then runs the activity. After a failure it waits on the **same** `signalEvent`, applies the payload, and retries that step.
+Pass the signal name as `signalEvent`. An empty string is fail-fast. A non-empty name parks on that signal. `ActivityOptions.ResumableOption` sets `WaitTimeout`, `MaxCorrectionAttempts`, `ApprovalSignal`, and `RunBeforeSignal` for that same signal. Leave `ResumableOption` nil to use the defaults: wait for the signal before the first attempt.
+
+`RunBeforeSignal: true` runs the activity immediately and uses the signal only as the correction payload after a failure.
 
 ```go
 exec.AddTransitionActivityWithOptions(
-    "transfer",
-    "retryWithCorrection",
-    TransferActivity,
-    &workflow.ActivityOptions{
-        StartToCloseTimeout: 30 * time.Second,
-        RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
+    "check_plan_activity",
+    "create_subscription",
+    checkPlan,
+    &temporal_client.ActivityOptions{
+        StartToCloseTimeout: 25 * time.Second,
+        ResumableOption: &temporal_client.ResumableOptions{
+            WaitTimeout: 2 * time.Minute,
+        },
     },
-    "notify",
+    "create_subscription_activity",
+    "plan_exist_activity",
+)
+
+generateExerciseAo := temporal_client.LongRunningActivityOptions(5*time.Minute, 30*time.Second)
+generateExerciseAo.ResumableOption = &temporal_client.ResumableOptions{
+    RunBeforeSignal: true,
+    WaitTimeout:     15 * time.Minute,
+}
+exec.AddTransitionActivityWithOptions(
+    "generate_exercise_activity",
+    "sg_processing_generation",
+    generateExercise,
+    generateExerciseAo,
+    "persist_generated_response_activity",
 )
 ```
 
@@ -237,7 +255,9 @@ If `ApprovalSignal` is set on that step’s `ResumableOptions`, success parks ag
 
 ## Status values
 
-`Execute` tracks status on `WorkflowExecutionData.Status` and, if implemented, `StatusReporter`.
+`Execute` tracks status on the run that is inside the workflow. `getStatus` reads that run, so two concurrent executions do not share a status. `WorkflowExecutionData.Status` is updated as a snapshot for the process and is not safe to read while other runs of the same workflow type are in flight.
+
+`WorkflowInit` queries return the execution data for the run that registered the handler. `ready` runs inside that query and must be pure. `WaitForExecutionData` polls from the client until a predicate is true.
 
 | Constant | When |
 |----------|------|
@@ -262,7 +282,8 @@ Created by `NewTemporalClient`.
 | `NewTemporalClient` | `temporal.go` | Builds SDK client + worker. Fails if the server/namespace is unreachable. |
 | `RegisterWorkflow` | `temporal.go` | Registers `Fn` on the worker under `Name`. |
 | `RegisterActivity` | `temporal.go` | Registers `Fn` on the worker under `Name`. |
-| `StartWorkflow` | `temporal.go` | Starts an execution. Uses config task queue unless `opts.TaskQueue` is set. Copies `RetryPolicy` onto start options. |
+| `StartWorkflow` | `temporal.go` | Starts an execution. Uses config task queue unless `opts.TaskQueue` is set. Copies `RetryPolicy` onto start options. | 
+| `SignalWithStartWorkflow` | `temporal.go` | Starts an execution and delivers a signal in one request. An existing workflow id receives the signal instead of a second start. `AlreadyStarted` reads the run id from a plain `StartWorkflow` conflict. |
 | `SignalWorkflow` | `temporal.go` | Sends a signal to `workflowID` / `runID`. Empty `runID` targets the current run. |
 | `QueryWorkflow` | `temporal.go` | Runs a query and decodes the result into `interface{}`. |
 | `CancelWorkflow` | `temporal.go` | Requests cancel for `workflowID` (empty run ID). |
@@ -270,7 +291,7 @@ Created by `NewTemporalClient`.
 | `UpdateWorkflow` | `temporal.go` | Sends a workflow update and returns a handle. |
 | `GetWorkflowInfo` | `temporal.go` | `workflow.GetInfo` — call only from workflow code. |
 | `Start` | `temporal.go` | Starts the worker poller. |
-| `Stop` | `temporal.go` | Stops the worker if non-nil. |
+| `Stop` | `temporal.go` | Stops the worker, then closes the client. |
 
 #### `StartWorkflowOptions`
 
@@ -300,7 +321,7 @@ Created by `NewWorkflowExecution(temporalClient)`.
 |----------|--------|----------------|
 | `NewWorkflowExecution` | `workflow.go` | Allocates the activity map and a `SignalConsumer`. |
 | `Execute` | `workflow.go` | Runs the pipeline from `firstActivity`. Registers `getStatus`. Sets `PENDING` then each step; `COMPLETED` on success. Branching uses `ExecutionWorkflow.GetActivity()`. |
-| `AddTransitionActivityWithOptions` | `workflow.go` | Registers the activity on the worker and adds a graph node. Empty `signalEvent` is fail-fast. Non-empty `signalEvent` waits for that Signal before each attempt. First call sets the start node. Unknown `nextActivities` get placeholder entries until registered. |
+| `AddTransitionActivityWithOptions` | `workflow.go` | Registers the activity on the worker and adds a graph node. Empty `signalEvent` is fail-fast. A non-empty name waits on that signal. `ActivityOptions.ResumableOption` sets `WaitTimeout` and `RunBeforeSignal`. First call sets the start node. An empty next name is ignored. |
 | `RegisterWorkflow` | `workflow.go` | Delegates to the Temporal client. |
 | `StartWorkflow` | `workflow.go` | Delegates to the client. |
 | `GetWorkflowResult` | `workflow.go` | Delegates to the client. |
@@ -364,10 +385,12 @@ Implement on pipeline state for branching:
 
 ## Activity options
 
-Pass `*workflow.ActivityOptions` on each transition. Typical fields:
+Pass `*ActivityOptions` on each transition. Typical fields:
 
 - `StartToCloseTimeout` — required in practice; resumable steps default to 30s if unset
+- `HeartbeatTimeout` — set this for long activities. `LongRunningActivityOptions` fills both timeouts
 - `RetryPolicy` — bounded `MaximumAttempts` on resumable steps so parking can happen; Temporal’s default retries can run for a long time
+- `TaskQueue` — leave empty to use the worker queue. A different queue is not polled by this worker; registration logs that mismatch
 
 ---
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/mocks"
 	"go.temporal.io/sdk/testsuite"
@@ -41,6 +42,10 @@ func (m *mockTemporal) GetWorkflowInfo(workflowCtx workflow.Context) (*workflow.
 }
 
 func (m *mockTemporal) StartWorkflow(ctx context.Context, opts StartWorkflowOptions, workflowFn interface{}, args ...interface{}) (client.WorkflowRun, error) {
+	return m.startRun, m.startErr
+}
+
+func (m *mockTemporal) SignalWithStartWorkflow(ctx context.Context, opts StartWorkflowOptions, signalName string, signalArg interface{}, workflowFn interface{}, workflowArgs ...interface{}) (client.WorkflowRun, error) {
 	return m.startRun, m.startErr
 }
 
@@ -173,6 +178,38 @@ func TestSignalCancelQueryAndResult(t *testing.T) {
 	}
 	if err := tc.GetWorkflowResult(ctx, "wf", "run", nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSignalWithStartWorkflow(t *testing.T) {
+	mockClient := &mocks.Client{}
+	mockRun := &mocks.WorkflowRun{}
+	mockClient.On("SignalWithStartWorkflow", mock.Anything, "wf-1", "approve", true, mock.MatchedBy(func(opts client.StartWorkflowOptions) bool {
+		return opts.ID == "wf-1" && opts.TaskQueue == "orders"
+	}), mock.Anything, "payload").Return(mockRun, nil)
+
+	tc := &temporalClient{client: mockClient, taskQueue: "default"}
+	run, err := tc.SignalWithStartWorkflow(context.Background(), StartWorkflowOptions{
+		WorkflowID: "wf-1",
+		TaskQueue:  "orders",
+	}, "approve", true, "PaymentWorkflow", "payload")
+	if err != nil || run != mockRun {
+		t.Fatalf("run=%v err=%v", run, err)
+	}
+	if _, err := tc.SignalWithStartWorkflow(context.Background(), StartWorkflowOptions{}, "", nil, "PaymentWorkflow"); err == nil {
+		t.Fatal("expected empty signal name error")
+	}
+	mockClient.AssertExpectations(t)
+}
+
+func TestAlreadyStarted(t *testing.T) {
+	err := serviceerror.NewWorkflowExecutionAlreadyStarted("already started", "req-1", "run-9")
+	runID, ok := AlreadyStarted(err)
+	if !ok || runID != "run-9" {
+		t.Fatalf("AlreadyStarted = (%q, %v)", runID, ok)
+	}
+	if _, ok := AlreadyStarted(errors.New("other")); ok {
+		t.Fatal("expected unrelated error to be ignored")
 	}
 }
 

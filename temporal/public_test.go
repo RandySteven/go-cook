@@ -17,7 +17,7 @@ func TestExecuteWorkflowReturnsState(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddTransitionActivityWithOptions("step1", "", identityActivity, &workflow.ActivityOptions{StartToCloseTimeout: time.Second})
+	we.AddTransitionActivityWithOptions("step1", "", identityActivity, &ActivityOptions{StartToCloseTimeout: time.Second})
 	state := &executionWorkflow{Activity: "stay"}
 
 	var got ExecutionData
@@ -41,7 +41,7 @@ func TestExecuteWorkflowReturnsActivityError(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddTransitionActivityWithOptions("step1", "", failActivity, &workflow.ActivityOptions{StartToCloseTimeout: time.Second})
+	we.AddTransitionActivityWithOptions("step1", "", failActivity, &ActivityOptions{StartToCloseTimeout: time.Second})
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
 		_, err := ExecuteWorkflow(ctx, we, &executionWorkflow{})
@@ -119,6 +119,47 @@ func TestWorkflowInitRegistersQueryAndWorkflowID(t *testing.T) {
 	}
 	if we.GetWorkflowID() == "" {
 		t.Fatal("expected workflow id from workflow info")
+	}
+}
+
+func TestWorkflowInitQueryIgnoresSharedState(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+
+	mt := &mockTemporal{}
+	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
+	state := &executionWorkflow{Activity: "step1"}
+
+	var queried executionWorkflow
+	var queryErr error
+	env.RegisterDelayedCallback(func() {
+		we.SetExecutionData(&executionWorkflow{Activity: "other-run"})
+		val, err := env.QueryWorkflow("state")
+		if err != nil {
+			queryErr = err
+			env.SignalWorkflow("done", true)
+			return
+		}
+		queryErr = val.Get(&queried)
+		env.SignalWorkflow("done", true)
+	}, time.Millisecond)
+
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		if _, err := WorkflowInit(ctx, we, "state", state, nil); err != nil {
+			return err
+		}
+		var done bool
+		workflow.GetSignalChannel(ctx, "done").Receive(ctx, &done)
+		return nil
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if queryErr != nil {
+		t.Fatal(queryErr)
+	}
+	if queried.Activity != "step1" {
+		t.Fatalf("queried activity = %q", queried.Activity)
 	}
 }
 
@@ -306,5 +347,47 @@ func TestQueryWorkflowDataRejectsInvalidInput(t *testing.T) {
 	mt.queryVal = nil
 	if _, err := QueryWorkflowData(context.Background(), mt, "state", "wf", "run", nil); err == nil {
 		t.Fatal("expected nil execution data error")
+	}
+}
+
+func TestWaitForExecutionDataPollsUntilReady(t *testing.T) {
+	calls := 0
+	mt := &mockTemporal{}
+	mt.queryFn = func(ctx context.Context, workflowID string, runID string, queryType string) (interface{}, error) {
+		calls++
+		if calls == 1 {
+			return &executionWorkflow{Activity: "processing"}, nil
+		}
+		return &executionWorkflow{Activity: "done"}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	got, err := WaitForExecutionData(ctx, mt, "state", "wf-1", "run-1", &executionWorkflow{}, func(data ExecutionData) bool {
+		return data.GetActivity() == "done"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetActivity() != "done" || calls < 2 {
+		t.Fatalf("got %q after %d calls", got.GetActivity(), calls)
+	}
+}
+
+func TestAddTransitionCarriesResumableOptions(t *testing.T) {
+	mt := &mockTemporal{}
+	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
+	we.AddTransitionActivityWithOptions("transfer", DefaultCorrectionSignal, identityActivity, &ActivityOptions{
+		ResumableOption: &ResumableOptions{
+			RunBeforeSignal: true,
+			WaitTimeout:     time.Minute,
+		},
+	})
+	info := we.activity["transfer"]
+	if info.SignalEvent != DefaultCorrectionSignal || info.Resumable == nil || !info.Resumable.RunBeforeSignal {
+		t.Fatalf("resumable = %+v signal = %q", info.Resumable, info.SignalEvent)
+	}
+	if info.Resumable.WaitTimeout != time.Minute {
+		t.Fatalf("WaitTimeout = %s", info.Resumable.WaitTimeout)
 	}
 }

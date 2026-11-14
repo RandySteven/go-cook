@@ -119,16 +119,54 @@ func TestWorkflowExecutionDelegates(t *testing.T) {
 func TestGetNextActivity(t *testing.T) {
 	we := &WorkflowExecutionData{
 		activity: map[string]*ActivityExecutionInfo{
-			"step2": {ActivityName: "step2"},
+			"step2": {ActivityName: "step2", ActivityFn: identityActivity},
 		},
 	}
-	curr := &ActivityExecutionInfo{NextActivities: []string{"step2"}}
-	got := we.getNextActivity(curr, "step2")
-	if got == nil || got.ActivityName != "step2" {
-		t.Fatalf("got = %+v", got)
+	curr := &ActivityExecutionInfo{ActivityName: "step1", NextActivities: []string{"step2"}}
+	got, err := we.getNextActivity(curr, "step2")
+	if err != nil || got == nil || got.ActivityName != "step2" {
+		t.Fatalf("got = %+v err = %v", got, err)
 	}
-	if we.getNextActivity(curr, "missing") != nil {
-		t.Fatal("expected nil for unknown next activity")
+	if _, err := we.getNextActivity(curr, "missing"); err == nil {
+		t.Fatal("expected error for unknown next activity")
+	}
+}
+
+func strayActivity(ctx context.Context, s *executionWorkflow) (*executionWorkflow, error) {
+	s.SetActivity("missing")
+	return s, nil
+}
+
+func TestExecuteRejectsUnknownBranch(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	env.RegisterActivity(strayActivity)
+
+	mt := &mockTemporal{}
+	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
+	opts := &ActivityOptions{StartToCloseTimeout: time.Second}
+	we.AddTransitionActivityWithOptions("step1", "", strayActivity, opts, "step2")
+
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		return we.Execute(ctx, &executionWorkflow{})
+	})
+	if env.GetWorkflowError() == nil {
+		t.Fatal("expected unknown branch to fail the workflow")
+	}
+	if we.Status != StatusFailed {
+		t.Fatalf("Status = %q, want %s", we.Status, StatusFailed)
+	}
+}
+
+func TestAddTransitionIgnoresEmptyNextActivity(t *testing.T) {
+	mt := &mockTemporal{}
+	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
+	we.AddTransitionActivityWithOptions("step1", "", identityActivity, nil, "")
+	if we.activity["step1"].NextActivities != nil {
+		t.Fatalf("next = %#v, want nil", we.activity["step1"].NextActivities)
+	}
+	if _, exists := we.activity[""]; exists {
+		t.Fatal("empty activity name should not be registered")
 	}
 }
 
@@ -139,7 +177,7 @@ func TestExecuteSingleActivity(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	opts := &workflow.ActivityOptions{StartToCloseTimeout: time.Second}
+	opts := &ActivityOptions{StartToCloseTimeout: time.Second}
 	we.AddTransitionActivityWithOptions("step1", "", identityActivity, opts)
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
@@ -161,8 +199,8 @@ func TestExecuteBranchesToNextActivity(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddTransitionActivityWithOptions("step1", "", branchActivity, &workflow.ActivityOptions{StartToCloseTimeout: time.Second}, "step2")
-	we.AddTransitionActivityWithOptions("step2", "", identityActivity, &workflow.ActivityOptions{StartToCloseTimeout: time.Second})
+	we.AddTransitionActivityWithOptions("step1", "", branchActivity, &ActivityOptions{StartToCloseTimeout: time.Second}, "step2")
+	we.AddTransitionActivityWithOptions("step2", "", identityActivity, &ActivityOptions{StartToCloseTimeout: time.Second})
 
 	env.ExecuteWorkflow(func(ctx workflow.Context) error {
 		return we.Execute(ctx, &executionWorkflow{})
@@ -179,7 +217,7 @@ func TestExecuteActivityFailure(t *testing.T) {
 
 	mt := &mockTemporal{}
 	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
-	we.AddTransitionActivityWithOptions("step1", "", failActivity, &workflow.ActivityOptions{
+	we.AddTransitionActivityWithOptions("step1", "", failActivity, &ActivityOptions{
 		StartToCloseTimeout: time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})

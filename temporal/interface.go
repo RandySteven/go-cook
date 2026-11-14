@@ -40,11 +40,11 @@ type (
 
 		// AddTransitionActivityWithOptions registers an activity with the
 		// Temporal worker and appends it to the sequential pipeline. Activities
-		// run in registration order. Non-empty signalEvent is the Signal that
-		// must be sent before the activity runs; after failure, Execute waits on
-		// the same signalEvent, applies the payload, and retries.
-		// nextActivities lists allowed branch targets for this step.
-		AddTransitionActivityWithOptions(activityName string, signalEvent string, activityFn ActivityFunction, options *workflow.ActivityOptions, nextActivities ...string)
+		// run in registration order. An empty signalEvent fails the step when
+		// the activity fails. A non-empty signalEvent parks on that signal.
+		// options.ResumableOption sets WaitTimeout and RunBeforeSignal for that
+		// signal. nextActivities lists allowed branch targets for this step.
+		AddTransitionActivityWithOptions(activityName string, signalEvent string, activityFn ActivityFunction, options *ActivityOptions, nextActivities ...string)
 
 		// RegisterWorkflow registers a workflow function with the Temporal worker.
 		RegisterWorkflow(name string, fn interface{})
@@ -55,6 +55,11 @@ type (
 
 		// StartWorkflow starts a new workflow execution and returns its run handle.
 		StartWorkflow(ctx context.Context, opts StartWorkflowOptions, workflowFn interface{}, args ...interface{}) (client.WorkflowRun, error)
+
+		// SignalWithStartWorkflow starts a workflow and delivers signalName in one request.
+		// When a run with that workflow id already exists, Temporal signals that run instead
+		// of starting a second one.
+		SignalWithStartWorkflow(ctx context.Context, opts StartWorkflowOptions, signalName string, signalArg interface{}, workflowFn interface{}, workflowArgs ...interface{}) (client.WorkflowRun, error)
 
 		// GetWorkflowResult blocks until the workflow completes and decodes the
 		// result into result.
@@ -131,6 +136,11 @@ type (
 
 		// StartWorkflow starts a new workflow execution and returns the run ID.
 		StartWorkflow(ctx context.Context, opts StartWorkflowOptions, workflowFn interface{}, args ...interface{}) (client.WorkflowRun, error)
+
+		// SignalWithStartWorkflow starts a workflow and delivers signalName in one request.
+		// When a run with that workflow id already exists, Temporal signals that run instead
+		// of starting a second one.
+		SignalWithStartWorkflow(ctx context.Context, opts StartWorkflowOptions, signalName string, signalArg interface{}, workflowFn interface{}, workflowArgs ...interface{}) (client.WorkflowRun, error)
 
 		// SignalWorkflow sends a signal to a running workflow.
 		SignalWorkflow(ctx context.Context, workflowID string, runID string, signalName string, arg interface{}) error

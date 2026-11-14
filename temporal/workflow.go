@@ -2,11 +2,14 @@ package temporal_client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"time"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -19,6 +22,22 @@ type (
 	// ActivityFunction is any Temporal activity function. Prefer a concrete
 	// input/output type (not ExecutionData) so the SDK can serialize payloads.
 	ActivityFunction any
+
+	// ActivityOptions is the per-step configuration passed to
+	// AddTransitionActivityWithOptions. Timeout and retry fields are the
+	// Temporal activity options. ResumableOption, when the signal name is
+	// non-empty, sets how that signal gates or resumes the step.
+	ActivityOptions struct {
+		TaskQueue              string
+		ScheduleToCloseTimeout time.Duration
+		StartToCloseTimeout    time.Duration
+		HeartbeatTimeout       time.Duration
+		RetryPolicy            *temporal.RetryPolicy
+
+		// ResumableOption is optional. The signal name is the signalEvent
+		// argument, not a field here. Nil uses the resumable defaults.
+		ResumableOption *ResumableOptions
+	}
 
 	ActivityExecutionInfo struct {
 		ActivityName    string
@@ -45,6 +64,17 @@ type (
 
 		temporalClient Temporal
 		signalConsumer *SignalConsumer
+	}
+
+	// executionRun is workflow-local state for one execution. Query handlers
+	// close over this value. The fields on WorkflowExecutionData are shared by
+	// every run of that workflow type and are only a snapshot for callers that
+	// inspect the struct after the workflow task returns.
+	executionRun struct {
+		status      string
+		data        ExecutionData
+		startedAt   time.Time
+		completedAt time.Time
 	}
 )
 
@@ -105,29 +135,38 @@ func (w *WorkflowExecutionData) SignalExternalWorkflow(ctx workflow.Context, wor
 }
 
 // Execute runs the sequential activity pipeline, threading state through each activity.
-// If the state implements Navigable and an activity sets NextActivity, Execute branches
-// to that activity (which must be registered via AddBranchActivity). After the branch
-// chain completes, Execute returns — it does NOT resume the sequential pipeline.
+// After an activity returns, Execute reads GetActivity. An empty name, or a step with
+// no next activities, ends the pipeline. A name that is not in that step's
+// nextActivities fails the workflow.
 //
 // Steps with a non-empty signalEvent park until that Signal arrives, then run.
 // On failure they park again on the same signalEvent, apply the payload, and retry.
+// ResumableOptions.RunBeforeSignal runs the activity first and uses the signal only
+// after a failure.
 func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData ExecutionData) error {
 	currActivity := w.activity[w.firstActivity]
+	if currActivity == nil || currActivity.ActivityFn == nil {
+		return errors.New("workflow has no start activity")
+	}
 
-	w.StartedAt = time.Now()
+	run := &executionRun{
+		data:      executionData,
+		startedAt: workflow.Now(ctx),
+	}
+	w.StartedAt = run.startedAt
 	statusAttr := w.statusSearchAttribute()
-	err := w.setExecutionStatus(ctx, StatusPending, statusAttr)
+	err := w.setExecutionStatus(ctx, run, StatusPending, statusAttr)
 	if err != nil {
 		return err
 	}
-	err = w.registerStatusQuery(ctx)
+	err = w.registerStatusQuery(ctx, run)
 	if err != nil {
 		return err
 	}
 	for currActivity != nil {
-		if err := w.runActivity(ctx, currActivity, executionData); err != nil {
-			if w.Status != StatusFailed && w.Status != StatusRejected {
-				w.setExecutionStatus(ctx, StatusFailed, statusAttr)
+		if err := w.runActivity(ctx, run, currActivity, executionData); err != nil {
+			if run.status != StatusFailed && run.status != StatusRejected {
+				w.setExecutionStatus(ctx, run, StatusFailed, statusAttr)
 			}
 			return err
 		}
@@ -145,25 +184,35 @@ func (w *WorkflowExecutionData) Execute(ctx workflow.Context, executionData Exec
 			break
 		}
 
-		currActivity = w.getNextActivity(currActivity, nextActivity)
+		next, err := w.getNextActivity(currActivity, nextActivity)
+		if err != nil {
+			w.setExecutionStatus(ctx, run, StatusFailed, statusAttr)
+			return err
+		}
+		currActivity = next
 	}
 
-	w.CompletedAt = time.Now()
-	if w.Status != StatusFailed && w.Status != StatusRejected {
-		w.setExecutionStatus(ctx, StatusCompleted, statusAttr)
+	run.completedAt = workflow.Now(ctx)
+	w.CompletedAt = run.completedAt
+	if run.status != StatusFailed && run.status != StatusRejected {
+		w.setExecutionStatus(ctx, run, StatusCompleted, statusAttr)
 	}
 
 	return nil
 }
 
-func (w *WorkflowExecutionData) getNextActivity(currActivity *ActivityExecutionInfo, nextActivity string) *ActivityExecutionInfo {
-	log.Println("next activity", nextActivity)
+func (w *WorkflowExecutionData) getNextActivity(currActivity *ActivityExecutionInfo, nextActivity string) (*ActivityExecutionInfo, error) {
 	for _, info := range currActivity.NextActivities {
-		if info == nextActivity {
-			return w.activity[info]
+		if info != nextActivity {
+			continue
 		}
+		next := w.activity[info]
+		if next == nil || next.ActivityFn == nil {
+			return nil, fmt.Errorf("activity %s branches to unregistered activity %q", currActivity.ActivityName, nextActivity)
+		}
+		return next, nil
 	}
-	return nil
+	return nil, fmt.Errorf("activity %s cannot branch to %q", currActivity.ActivityName, nextActivity)
 }
 
 // StartWorkflow starts a new workflow execution and returns the run ID.
@@ -180,10 +229,11 @@ func (w *WorkflowExecutionData) SignalWorkflow(ctx context.Context, workflowID s
 	return w.temporalClient.SignalWorkflow(ctx, workflowID, runID, signalName, arg)
 }
 
-// runActivity executes a single activity. Non-empty SignalEvent waits for that Signal first.
-func (w *WorkflowExecutionData) runActivity(ctx workflow.Context, currActivity *ActivityExecutionInfo, executionData ExecutionData) error {
+// runActivity executes a single activity. Non-empty SignalEvent waits for that Signal first,
+// unless ResumableOptions.RunBeforeSignal is set.
+func (w *WorkflowExecutionData) runActivity(ctx workflow.Context, run *executionRun, currActivity *ActivityExecutionInfo, executionData ExecutionData) error {
 	if currActivity.SignalEvent != "" {
-		return w.runResumableActivity(ctx, currActivity, executionData)
+		return w.runResumableActivity(ctx, run, currActivity, executionData)
 	}
 
 	activityCtx := ctx
@@ -210,6 +260,9 @@ func (w *WorkflowExecutionData) RegisterWorkflow(name string, fn interface{}) {
 // GetWorkflowExecutionData gets the workflow execution data.
 // It is used to get the workflow execution data from the Temporal server.
 func (w *WorkflowExecutionData) GetWorkflowExecutionData(wfCtx workflow.Context, runID string, result interface{}) error {
+	if wfCtx != nil {
+		return errors.New("GetWorkflowExecutionData cannot be called from workflow code; use GetWorkflowResult")
+	}
 	err := w.temporalClient.GetWorkflowResult(context.Background(), w.WorkflowID, runID, result)
 	if err != nil {
 		return fmt.Errorf("failed to get workflow execution data: %w", err)
@@ -217,35 +270,83 @@ func (w *WorkflowExecutionData) GetWorkflowExecutionData(wfCtx workflow.Context,
 	return nil
 }
 
-func (w *WorkflowExecutionData) AddTransitionActivityWithOptions(activityName string, signalEvent string, activityFn ActivityFunction, options *workflow.ActivityOptions, nextActivities ...string) {
+func (w *WorkflowExecutionData) SignalWithStartWorkflow(ctx context.Context, opts StartWorkflowOptions, signalName string, signalArg interface{}, workflowFn interface{}, workflowArgs ...interface{}) (client.WorkflowRun, error) {
+	return w.temporalClient.SignalWithStartWorkflow(ctx, opts, signalName, signalArg, workflowFn, workflowArgs...)
+}
+
+func (o *ActivityOptions) sdk() *workflow.ActivityOptions {
+	if o == nil {
+		return nil
+	}
+	return &workflow.ActivityOptions{
+		TaskQueue:              o.TaskQueue,
+		ScheduleToCloseTimeout: o.ScheduleToCloseTimeout,
+		StartToCloseTimeout:    o.StartToCloseTimeout,
+		HeartbeatTimeout:       o.HeartbeatTimeout,
+		RetryPolicy:            o.RetryPolicy,
+	}
+}
+
+func (w *WorkflowExecutionData) AddTransitionActivityWithOptions(activityName string, signalEvent string, activityFn ActivityFunction, options *ActivityOptions, nextActivities ...string) {
+	if activityName == "" {
+		log.Println("temporal: skipped activity with an empty name")
+		return
+	}
+	w.warnActivityTaskQueue(activityName, options)
 	w.temporalClient.RegisterActivity(ActivityDefinition{
 		Name: activityName,
 		Fn:   activityFn,
 	})
 
 	//initiate first activity
-	if len(w.activity) == 0 {
+	if w.firstActivity == "" {
 		w.firstActivity = activityName
+	}
+
+	next := make([]string, 0, len(nextActivities))
+	for _, nextActivity := range nextActivities {
+		if nextActivity == "" {
+			log.Printf("temporal: activity %s ignored an empty next activity", activityName)
+			continue
+		}
+		next = append(next, nextActivity)
+	}
+	if len(next) == 0 {
+		next = nil
 	}
 
 	info := &ActivityExecutionInfo{
 		ActivityName:    activityName,
 		SignalEvent:     signalEvent,
 		ActivityFn:      activityFn,
-		ActivityOptions: options,
-		NextActivities:  nextActivities,
+		ActivityOptions: options.sdk(),
+		NextActivities:  next,
 	}
 	if signalEvent != "" {
-		resumable := ResumableOptions{CorrectionSignal: signalEvent}.withDefaults()
+		resumable := ResumableOptions{CorrectionSignal: signalEvent}
+		if options != nil && options.ResumableOption != nil {
+			resumable = *options.ResumableOption
+			resumable.CorrectionSignal = signalEvent
+		}
+		resumable = resumable.withDefaults()
 		info.Resumable = &resumable
 	}
 	w.activity[activityName] = info
+}
 
-	for _, nextActivity := range nextActivities {
-		if _, exists := w.activity[nextActivity]; !exists {
-			w.activity[nextActivity] = &ActivityExecutionInfo{}
-		}
+func (w *WorkflowExecutionData) warnActivityTaskQueue(activityName string, options *ActivityOptions) {
+	if options == nil || options.TaskQueue == "" || w.temporalClient == nil {
+		return
 	}
+	source, ok := w.temporalClient.(interface{ TaskQueue() string })
+	if !ok {
+		return
+	}
+	workerQueue := source.TaskQueue()
+	if workerQueue == "" || options.TaskQueue == workerQueue {
+		return
+	}
+	log.Printf("temporal: activity %s task queue %q differs from worker queue %q and will not be polled by this worker", activityName, options.TaskQueue, workerQueue)
 }
 
 func (w *WorkflowExecutionData) StartChildWorkflow(ctx workflow.Context, workflowID string, signalName string, request interface{}, result interface{}) error {
@@ -321,7 +422,13 @@ func (w *WorkflowExecutionData) ListenSignal(ctx workflow.Context, signalName st
 func (w *WorkflowExecutionData) WaitForAnySignal(ctx workflow.Context, signals map[string]interface{}) (string, error) {
 	selector := workflow.NewSelector(ctx)
 	received := ""
-	for signalName, result := range signals {
+	names := make([]string, 0, len(signals))
+	for signalName := range signals {
+		names = append(names, signalName)
+	}
+	sort.Strings(names)
+	for _, signalName := range names {
+		result := signals[signalName]
 		signalChan := workflow.GetSignalChannel(ctx, signalName)
 		selector.AddReceive(signalChan, func(c workflow.ReceiveChannel, more bool) {
 			c.Receive(ctx, result)

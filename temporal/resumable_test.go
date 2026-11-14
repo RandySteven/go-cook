@@ -56,8 +56,8 @@ func okActivity(ctx context.Context, s *resumableState) (*resumableState, error)
 	return s, nil
 }
 
-func resumableActivityOptions() *workflow.ActivityOptions {
-	return &workflow.ActivityOptions{
+func resumableActivityOptions() *ActivityOptions {
+	return &ActivityOptions{
 		StartToCloseTimeout: time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	}
@@ -217,6 +217,64 @@ func TestResumableActivityRejectedByApproval(t *testing.T) {
 	}
 	if we.Status != StatusRejected {
 		t.Fatalf("Status = %q, want %s", we.Status, StatusRejected)
+	}
+}
+
+func TestStatusQueryIgnoresSharedStatus(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	env.RegisterActivity(transferActivity)
+
+	mt := &mockTemporal{}
+	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
+	we.AddTransitionActivityWithOptions("transfer", DefaultCorrectionSignal, transferActivity, resumableActivityOptions())
+
+	env.RegisterDelayedCallback(func() {
+		we.Status = "OTHER_RUN"
+		val, err := env.QueryWorkflow(QueryGetStatus)
+		if err != nil {
+			t.Errorf("QueryWorkflow: %v", err)
+			return
+		}
+		var status string
+		if err := val.Get(&status); err != nil {
+			t.Errorf("decode status: %v", err)
+			return
+		}
+		if status != StatusAwaitingCorrection {
+			t.Errorf("status = %q, want %s", status, StatusAwaitingCorrection)
+		}
+		env.SignalWorkflow(DefaultCorrectionSignal, "account-123")
+	}, 50*time.Millisecond)
+
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		return we.Execute(ctx, &resumableState{Account: "invalid"})
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunBeforeSignalDoesNotWait(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	env.SetTestTimeout(3 * time.Second)
+	env.RegisterActivity(okActivity)
+
+	mt := &mockTemporal{}
+	we := NewWorkflowExecution(mt).(*WorkflowExecutionData)
+	ao := resumableActivityOptions()
+	ao.ResumableOption = &ResumableOptions{RunBeforeSignal: true}
+	we.AddTransitionActivityWithOptions("transfer", DefaultCorrectionSignal, okActivity, ao)
+
+	env.ExecuteWorkflow(func(ctx workflow.Context) error {
+		return we.Execute(ctx, &resumableState{Account: "account-123"})
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if we.Status != StatusCompleted {
+		t.Fatalf("Status = %q, want %s", we.Status, StatusCompleted)
 	}
 }
 

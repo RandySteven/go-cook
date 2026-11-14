@@ -25,11 +25,16 @@ func ExecuteWorkflow(ctx workflow.Context, wf WorkflowExecution, executionData E
 }
 
 // WorkflowInit stores execution state, records the workflow ID, and registers a
-// query that returns the current execution data.
+// query that returns this run's execution data.
+//
+// ready, when set, runs inside the query handler. It must be pure: no network,
+// cache, or logging. Return an error to tell a polling client the state is not
+// ready yet. Prefer WaitForExecutionData when the readiness check can live on
+// the client.
 func WorkflowInit(
-	ctx workflow.Context, 
-	wf WorkflowExecution, 
-	queryType string, 
+	ctx workflow.Context,
+	wf WorkflowExecution,
+	queryType string,
 	executionData ExecutionData,
 	ready func(ExecutionData) error) (ExecutionData, error) {
 	if wf == nil {
@@ -48,18 +53,84 @@ func WorkflowInit(
 		wf.SetWorkflowID(info.WorkflowExecution.ID)
 	}
 
+	// Capture the pointer for this run. Another execution may overwrite the
+	// shared WorkflowExecution fields while this query is being served.
+	state := executionData
 	if err := workflow.SetQueryHandler(ctx, queryType, func() (ExecutionData, error) {
-		data := wf.GetExecutionData()
 		if ready != nil {
-			if err := ready(data); err != nil {
+			if err := ready(state); err != nil {
 				return nil, err
-			}	
+			}
 		}
-		return data, nil
+		return state, nil
 	}); err != nil {
 		return nil, err
 	}
-	return wf.GetExecutionData(), nil
+	return state, nil
+}
+
+// WaitForExecutionData polls a workflow query until ready returns true or ctx ends.
+// With no deadline, it queries once. ready runs on the client, not inside the workflow.
+func WaitForExecutionData(ctx context.Context, temporalClient Temporal, queryType string, workflowID string, runID string, dest ExecutionData, ready func(ExecutionData) bool) (ExecutionData, error) {
+	if ctx == nil {
+		return nil, errors.New("context is nil")
+	}
+	if temporalClient == nil {
+		return nil, errors.New("temporal client is nil")
+	}
+	if queryType == "" {
+		return nil, errors.New("query type is empty")
+	}
+	if workflowID == "" {
+		return nil, errors.New("workflow id is empty")
+	}
+	if ready == nil {
+		return nil, errors.New("ready function is nil")
+	}
+
+	_, bounded := ctx.Deadline()
+	var lastErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		raw, err := temporalClient.QueryWorkflow(ctx, workflowID, runID, queryType)
+		if err == nil && raw != nil {
+			data, decErr := decodeExecutionData(raw, dest)
+			if decErr != nil {
+				return nil, decErr
+			}
+			if ready(data) {
+				return data, nil
+			}
+			lastErr = errors.New("execution data is not ready")
+		} else if err != nil {
+			lastErr = err
+		} else {
+			lastErr = errors.New("execution data is nil")
+		}
+		if !bounded {
+			return nil, lastErr
+		}
+
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// LongRunningActivityOptions sets a start-to-close timeout and a heartbeat timeout
+// so a worker crash is noticed before the activity's full deadline.
+func LongRunningActivityOptions(startToClose, heartbeat time.Duration) *ActivityOptions {
+	return &ActivityOptions{
+		StartToCloseTimeout: startToClose,
+		HeartbeatTimeout:    heartbeat,
+	}
 }
 
 // GetWorkflowData returns the workflow execution held by wf.

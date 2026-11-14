@@ -2,10 +2,12 @@ package temporal_client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
@@ -113,7 +115,7 @@ func (t *temporalClient) RegisterActivity(definition ActivityDefinition) {
 	})
 }
 
-func (t *temporalClient) StartWorkflow(ctx context.Context, opts StartWorkflowOptions, workflowFn interface{}, args ...interface{}) (client.WorkflowRun, error) {
+func (t *temporalClient) startOptions(opts StartWorkflowOptions) client.StartWorkflowOptions {
 	taskQueue := t.taskQueue
 	if opts.TaskQueue != "" {
 		taskQueue = opts.TaskQueue
@@ -135,8 +137,29 @@ func (t *temporalClient) StartWorkflow(ctx context.Context, opts StartWorkflowOp
 			MaximumAttempts:    opts.RetryPolicy.MaximumAttempts,
 		}
 	}
+	return startOpts
+}
 
-	return t.client.ExecuteWorkflow(ctx, startOpts, workflowFn, args...)
+func (t *temporalClient) StartWorkflow(ctx context.Context, opts StartWorkflowOptions, workflowFn interface{}, args ...interface{}) (client.WorkflowRun, error) {
+	return t.client.ExecuteWorkflow(ctx, t.startOptions(opts), workflowFn, args...)
+}
+
+func (t *temporalClient) SignalWithStartWorkflow(ctx context.Context, opts StartWorkflowOptions, signalName string, signalArg interface{}, workflowFn interface{}, workflowArgs ...interface{}) (client.WorkflowRun, error) {
+	if signalName == "" {
+		return nil, errors.New("signal name is empty")
+	}
+	startOpts := t.startOptions(opts)
+	return t.client.SignalWithStartWorkflow(ctx, startOpts.ID, signalName, signalArg, startOpts, workflowFn, workflowArgs...)
+}
+
+// AlreadyStarted reports the run id when err is Temporal's workflow-already-started error.
+// The caller already knows the workflow id it tried to start.
+func AlreadyStarted(err error) (runID string, ok bool) {
+	var target *serviceerror.WorkflowExecutionAlreadyStarted
+	if !errors.As(err, &target) || target == nil {
+		return "", false
+	}
+	return target.RunId, true
 }
 
 func (t *temporalClient) SignalWorkflow(ctx context.Context, workflowID string, runID string, signalName string, arg interface{}) error {
@@ -173,7 +196,16 @@ func (t *temporalClient) Start() error {
 func (t *temporalClient) Stop() {
 	if t.worker != nil {
 		t.worker.Stop()
+		t.worker = nil
 	}
+	if t.client != nil {
+		t.client.Close()
+		t.client = nil
+	}
+}
+
+func (t *temporalClient) TaskQueue() string {
+	return t.taskQueue
 }
 
 func (t *temporalClient) GetWorkflowInfo(workflowCtx workflow.Context) (*workflow.Info, error) {
